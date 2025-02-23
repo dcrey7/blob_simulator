@@ -159,13 +159,13 @@ const uniforms = {
 
 // Settings object
 const settings = {
-    amount: 6,
-    size: 1.0,
-    speed: 1.0,
-    viscosity: 0.416,
-    dissipation: 0.536,
-    colorValue: 0.554,
-    colorRange: 0.264
+    amount: 5,
+    size: 2.0,
+    speed: 0.1,
+    viscosity: 1.0,
+    dissipation: 0.0,
+    colorValue: 0.356,
+    colorRange: 0.0
 };
 
 // Mouse state
