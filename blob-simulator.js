@@ -164,7 +164,7 @@ const settings = {
     speed: 0.1,
     viscosity: 1.0,
     dissipation: 0.0,
-    colorValue: 0.356,
+    colorValue: 0.109,
     colorRange: 0.0
 };
 
