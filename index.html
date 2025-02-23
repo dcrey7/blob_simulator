@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blob Simulator</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: black;
+            color: white;
+        }
+
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            cursor: pointer;
+        }
+
+        #controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 300px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .value-display {
+            font-family: monospace;
+            color: #2196F3;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            -webkit-appearance: none;
+            background: rgba(255, 255, 255, 0.1);
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #2196F3;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.1);
+        }
+
+        .color-preview {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            transition: transform 0.2s;
+        }
+
+        .header {
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 500;
+        }
+
+        #error-message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .separator {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="error-message"></div>
+    <div id="controls">
+        <div class="header">
+            <h1>Blob Simulator</h1>
+        </div>
+
+        <!-- Basic Properties -->
+        <div class="control-group">
+            <div class="control-label">
+                <span>Blob Size</span>
+                <span id="size-value" class="value-display">1.0</span>
+            </div>
+            <input type="range" id="size" min="0.1" max="2.0" step="0.1" value="1.0">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Amount</span>
+                <span id="amount-value" class="value-display">6</span>
+            </div>
+            <input type="range" id="amount" min="1" max="10" step="1" value="6">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Speed</span>
+                <span id="speed-value" class="value-display">1.0</span>
+            </div>
+            <input type="range" id="speed" min="0.1" max="2.0" step="0.1" value="1.0">
+        </div>
+
+        <div class="separator"></div>
+
+        <!-- Physical Properties -->
+        <div class="control-group">
+            <div class="control-label">
+                <span>Viscosity</span>
+                <span id="viscosity-value" class="value-display">0.416</span>
+            </div>
+            <input type="range" id="viscosity" min="0" max="1" step="0.001" value="0.416">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Dissipation</span>
+                <span id="dissipation-value" class="value-display">0.536</span>
+            </div>
+            <input type="range" id="dissipation" min="0" max="1" step="0.001" value="0.536">
+        </div>
+
+        <div class="separator"></div>
+
+        <!-- Color Properties -->
+        <div class="control-group">
+            <div class="control-label">
+                <span>Color Scale</span>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span id="color-value" class="value-display">0.554</span>
+                    <div id="color-preview" class="color-preview"></div>
+                </div>
+            </div>
+            <input type="range" id="color" min="0" max="1" step="0.001" value="0.554">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Color Range</span>
+                <span id="range-value" class="value-display">0.264</span>
+            </div>
+            <input type="range" id="range" min="0" max="1" step="0.001" value="0.264">
+        </div>
+    </div>
+
+    <script src="blob-simulator.js"></script>
+</body>
+</html>
