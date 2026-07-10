@@ -410,11 +410,13 @@ void main(){
 }`;
 const SFRAG = `#version 300 es
 precision highp float;
+uniform float uMode;
 out vec4 fragColor;
 void main(){
   float d = length(gl_PointCoord - 0.5);
   float a = smoothstep(0.5, 0.22, d) * 0.5;   // round dot, 50% opacity like the original
-  fragColor = vec4(vec3(a), a);               // premultiplied white
+  // dark mode: added as white light; light mode: subtracted as gray shadow
+  fragColor = vec4(vec3(a * mix(1.0, 0.55, uMode)), a);
 }`;
 
 /* post pass: mip-chain bloom (light halation off hot wax + bulb), vignette, grain */
@@ -519,7 +521,8 @@ function buildPrograms(){
 
   progStars = makeProg(SVERT, SFRAG);
   US = { uVP: gl.getUniformLocation(progStars, 'uVP'),
-         uPx: gl.getUniformLocation(progStars, 'uPx') };
+         uPx: gl.getUniformLocation(progStars, 'uPx'),
+         uMode: gl.getUniformLocation(progStars, 'uMode') };
   starVAO = gl.createVertexArray();
   starBuf = gl.createBuffer();
   gl.bindVertexArray(starVAO);
@@ -607,7 +610,7 @@ const blobs = RADII.map((r, i) => ({
   vx: 0, vy: 0, vz: 0,
   r: i < S.blobs ? r : 0.001, T: rnd(0.25, 0.65),
   stretch: 1, zPref: rnd(-0.16, 0.16),
-  homeX: ((i + 0.5)/RADII.length*2 - 1)*0.8,   // spread lanes → no permanent mega-blob
+  wf: rnd(0.06, 0.13), wph: rnd(0, 6.28),      // wandering home → tours the whole width
   heatK: rnd(0.9, 1.35),                        // personal thermostat → desynced cycles
   f1: rnd(0.10, 0.23), f2: rnd(0.08, 0.2), ph: rnd(0, 6.28), ph2: rnd(0, 6.28),
   dens: rnd(-0.03, 0.03),                       // per-blob density quirk → varied cycles
@@ -646,7 +649,8 @@ function physics(dt){
 
     // --- buoyancy: hotter than neutral rises, colder sinks ---
     const Tn = 0.40 + 0.08*(b.y + 1) + b.dens;
-    let ax = Math.sin(simTime*b.f1 + b.ph)*0.06 + (b.homeX*xmax*0.72 - b.x)*0.075
+    const tx = Math.sin(simTime*b.wf + b.wph) * (xmax*0.92 - b.r);   // roaming home
+    let ax = Math.sin(simTime*b.f1 + b.ph)*0.06 + (tx - b.x)*0.22
            + Math.sin(simTime*0.06 + b.y*1.3)*0.03;   // slow ambient convection stir
     let ay = active ? 1.7*(b.T - Tn) : -2.2;          // retired blobs dive below the frame
 
@@ -983,8 +987,8 @@ function frame(now){
   gl.uniform3fv(U.uGlowCol, mode.glow);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  // pass 1b: the jam page's star particles, drawn only where liquid shows (dark modes)
-  if (!S.light && starSeeded){
+  // pass 1b: the jam page's star particles, drawn only where liquid shows
+  if (starSeeded){
     const dtSim = S.paused ? 0 : Math.min(dt, 0.05)*timeScale;
     for (let i = 0; i < STAR_N; i++){
       const i3 = i*3, s = starMeta[i];
@@ -996,12 +1000,15 @@ function frame(now){
     gl.useProgram(progStars);
     gl.uniformMatrix4fv(US.uVP, false, starVP(Math.sin(st)*10, Math.cos(st)*10, 100));
     gl.uniform1f(US.uPx, canvas.height*0.5);
+    gl.uniform1f(US.uMode, S.light ? 1 : 0);
     gl.bindVertexArray(starVAO);
     gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, starPos);
     gl.enable(gl.BLEND);
     gl.blendFuncSeparate(gl.ONE_MINUS_DST_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
+    if (S.light) gl.blendEquationSeparate(gl.FUNC_REVERSE_SUBTRACT, gl.FUNC_ADD);
     gl.drawArrays(gl.POINTS, 0, STAR_N);
+    gl.blendEquation(gl.FUNC_ADD);
     gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
   }
