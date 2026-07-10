@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Exact replica of the NOT ME start screen (Mistral AI Game Jam, team 16)">
+
+    <title>NOT ME - Start Screen Replica</title>
+
+    <!-- Import the Pixelify Sans font for our game's unique style -->
+    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Three.js for background animations (same r128 build the game used) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+        /* Styles copied from the game's styles.css (landing page subset) */
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #1a1a1a;
+            --text-primary: #ffffff;
+            --text-secondary: #cccccc;
+            --accent-red: #ff0000;
+            --accent-green: #00ff00;
+            --transition-speed: 0.3s;
+            --spacing-sm: 0.5rem;
+            --spacing-md: 1rem;
+            --spacing-lg: 2rem;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body { width: 100%; height: 100%; overflow: hidden; }
+
+        body {
+            font-family: 'Pixelify Sans', sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        #webgl-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+
+        #game-container {
+            position: relative;
+            z-index: 2;
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .game-page {
+            display: none;
+            width: 100%;
+            padding: var(--spacing-lg);
+            text-align: center;
+        }
+
+        .game-page.active {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.5s ease-in-out;
+        }
+
+        #landing-page { text-align: center; }
+
+        .game-title {
+            font-size: 4rem;
+            margin-bottom: var(--spacing-lg);
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .title-not { color: var(--text-primary); }
+
+        .title-emphasis {
+            color: var(--accent-red) !important;
+            font-weight: bold;
+        }
+
+        .button {
+            background: transparent;
+            border: 2px solid var(--text-primary);
+            color: var(--text-primary);
+            padding: var(--spacing-md) var(--spacing-lg);
+            font-family: 'Pixelify Sans', sans-serif;
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: all var(--transition-speed) ease;
+            min-width: 150px;
+            text-transform: uppercase;
+            margin: 0.5rem;
+        }
+
+        .button:hover:not(:disabled) {
+            background: var(--text-primary);
+            color: var(--bg-primary);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (max-width: 768px) { .game-title { font-size: 3rem; } }
+        @media (max-width: 480px) { .game-title { font-size: 2rem; } .button { width: 100%; } }
+    </style>
+</head>
+<body>
+    <!-- WebGL background container for particle effects -->
+    <canvas id="webgl-background"></canvas>
+
+    <!-- Main game container -->
+    <div id="game-container">
+        <!-- Landing Page -->
+        <div id="landing-page" class="game-page active">
+            <h1 class="game-title">
+                <span class="title-not">NOT</span>
+                <span class="title-emphasis">ME</span>
+            </h1>
+            <button id="play-button" class="button primary-button">PLAY</button>
+        </div>
+    </div>
+
+    <script>
+    // ============================================================
+    // background.js from Mistral-AI-Game-Jam/team_16trial,
+    // copied verbatim (only the module export line removed).
+    // ============================================================
+
+    class Background {
+        constructor() {
+            // Initialize core Three.js components
+            this.scene = new THREE.Scene();
+            this.camera = new THREE.PerspectiveCamera(
+                75, // Field of view
+                window.innerWidth / window.innerHeight, // Aspect ratio
+                0.1, // Near plane
+                1000 // Far plane
+            );
+
+            // Setup renderer with transparency and anti-aliasing
+            this.renderer = new THREE.WebGLRenderer({
+                canvas: document.querySelector('#webgl-background'),
+                alpha: true,
+                antialias: true
+            });
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+            this.renderer.setClearColor(0x0a0a0a, 1); // Dark background color
+
+            // Initialize particle system properties
+            this.particles = [];
+            this.particleCount = 600;
+            this.particleGeometry = new THREE.BufferGeometry();
+            this.particleMaterial = new THREE.PointsMaterial({
+                size: 2,
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.5,
+                blending: THREE.AdditiveBlending
+            });
+
+            // Set up camera position
+            this.camera.position.z = 100;
+
+            // Initialize the background
+            this.init();
+
+            // Bind event listeners
+            this.bindEvents();
+        }
+
+        init() {
+            // Create particle positions array
+            const positions = new Float32Array(this.particleCount * 3);
+
+            // Generate random positions for particles
+            for (let i = 0; i < this.particleCount; i++) {
+                const i3 = i * 3; // Index for x, y, z coordinates
+                positions[i3] = (Math.random() - 0.5) * window.innerWidth;     // X coordinate
+                positions[i3 + 1] = (Math.random() - 0.5) * window.innerHeight; // Y coordinate
+                positions[i3 + 2] = -250 + Math.random() * 310;                // Z: keep clear of the camera (z=100)
+
+                // Store particle data for animation
+                this.particles.push({
+                    velocity: (Math.random() - 0.5) * 0.2,
+                    baseX: positions[i3],
+                    baseY: positions[i3 + 1]
+                });
+            }
+
+            // Set particle positions in geometry
+            this.particleGeometry.setAttribute(
+                'position',
+                new THREE.BufferAttribute(positions, 3)
+            );
+
+            // Create particle system and add to scene
+            this.particleSystem = new THREE.Points(
+                this.particleGeometry,
+                this.particleMaterial
+            );
+            this.scene.add(this.particleSystem);
+
+            // Start animation loop
+            this.animate();
+        }
+
+        // Handle window resize events
+        bindEvents() {
+            window.addEventListener('resize', () => {
+                // Update camera aspect ratio and projection matrix
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+
+                // Update renderer size
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // Animation loop for particle movement
+        animate() {
+            requestAnimationFrame(() => this.animate());
+
+            const positions = this.particleGeometry.attributes.position.array;
+            const time = Date.now() * 0.0005;
+
+            // Update particle positions with wave-like motion
+            for (let i = 0; i < this.particleCount; i++) {
+                const i3 = i * 3;
+                const particle = this.particles[i];
+
+                // Create wave-like motion using sine waves
+                positions[i3] = particle.baseX + Math.sin(time + i) * 2;
+                positions[i3 + 1] = particle.baseY + Math.cos(time + i) * 2;
+
+                // Add slight drift to z-position
+                positions[i3 + 2] += particle.velocity;
+
+                // Reset particles that drift too far (wrap before they hit the camera)
+                if (positions[i3 + 2] > 60 || positions[i3 + 2] < -250) {
+                    positions[i3 + 2] = -250;
+                }
+            }
+
+            // Mark particle positions for update
+            this.particleGeometry.attributes.position.needsUpdate = true;
+
+            // Add subtle camera movement
+            this.camera.position.x = Math.sin(time) * 10;
+            this.camera.position.y = Math.cos(time) * 10;
+            this.camera.lookAt(this.scene.position);
+
+            // Render the scene
+            this.renderer.render(this.scene, this.camera);
+        }
+
+        // Method to add dramatic effects during game events
+        addDramaticEffect(type) {
+            switch(type) {
+                case 'impostor_reveal':
+                    // Create a dramatic red flash effect
+                    this.particleMaterial.color.setHex(0xff0000);
+                    setTimeout(() => {
+                        this.particleMaterial.color.setHex(0xffffff);
+                    }, 1000);
+                    break;
+
+                case 'round_start':
+                    // Increase particle movement temporarily
+                    const originalVelocities = this.particles.map(p => p.velocity);
+                    this.particles.forEach(p => p.velocity *= 2);
+                    setTimeout(() => {
+                        this.particles.forEach((p, i) => p.velocity = originalVelocities[i]);
+                    }, 2000);
+                    break;
+
+                case 'voting':
+                    // Create a pulsing effect
+                    const pulseAnimation = () => {
+                        this.particleMaterial.size = 2 + Math.sin(Date.now() * 0.005) * 1;
+                    };
+                    const pulseInterval = setInterval(pulseAnimation, 16);
+                    setTimeout(() => {
+                        clearInterval(pulseInterval);
+                        this.particleMaterial.size = 2;
+                    }, 3000);
+                    break;
+            }
+        }
+    }
+
+    // Initialize the background when the DOM is loaded
+    document.addEventListener('DOMContentLoaded', () => {
+        const background = new Background();
+
+        // Expose background instance for game events
+        window.gameBackground = background;
+    });
+    </script>
+</body>
+</html>

@@ -1,189 +1,1030 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Blob Simulator</title>
-    <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: black;
-            color: white;
-        }
-
-        canvas {
-            width: 100vw;
-            height: 100vh;
-            display: block;
-            cursor: pointer;
-        }
-
-        #controls {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            width: 300px;
-            background: rgba(0, 0, 0, 0.8);
-            padding: 20px;
-            border-radius: 10px;
-            backdrop-filter: blur(10px);
-        }
-
-        .control-group {
-            margin-bottom: 20px;
-        }
-
-        .control-label {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-            font-size: 14px;
-        }
-
-        .value-display {
-            font-family: monospace;
-            color: #2196F3;
-        }
-
-        input[type="range"] {
-            width: 100%;
-            height: 6px;
-            border-radius: 3px;
-            -webkit-appearance: none;
-            background: rgba(255, 255, 255, 0.1);
-            outline: none;
-        }
-
-        input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 16px;
-            height: 16px;
-            background: #2196F3;
-            border-radius: 50%;
-            cursor: pointer;
-            transition: transform 0.1s;
-        }
-
-        input[type="range"]::-webkit-slider-thumb:hover {
-            transform: scale(1.1);
-        }
-
-        .color-preview {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            border: 2px solid rgba(255, 255, 255, 0.2);
-            transition: transform 0.2s;
-        }
-
-        .header {
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .header h1 {
-            margin: 0;
-            font-size: 18px;
-            font-weight: 500;
-        }
-
-        #error-message {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(255, 0, 0, 0.8);
-            padding: 20px;
-            border-radius: 10px;
-            display: none;
-        }
-
-        .separator {
-            height: 1px;
-            background: rgba(255, 255, 255, 0.1);
-            margin: 20px 0;
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#07050c">
+<title>Lava</title>
+<style>
+  :root{
+    --accent: #ff8a2a;
+    --panel-bg: rgba(12, 9, 18, 0.52);
+    --panel-line: rgba(255,255,255,0.09);
+    --txt: rgba(236,231,242,0.72);
+    --txt-dim: rgba(236,231,242,0.38);
+  }
+  html.light{
+    --panel-bg: rgba(255,252,246,0.55);
+    --panel-line: rgba(20,10,5,0.10);
+    --txt: rgba(38,26,20,0.78);
+    --txt-dim: rgba(38,26,20,0.42);
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#000; }
+  html.light body{ background:#fff; }
+  canvas#gl{
+    position:fixed; inset:0; width:100vw; height:100vh; display:block;
+    cursor:crosshair; touch-action:none;
+  }
+  #ui{
+    position:fixed; inset:0; pointer-events:none;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-user-select:none; user-select:none;
+    transition: opacity .6s ease;
+  }
+  #ui.hidden{ opacity:0; }
+  #ui.hidden #panel{ transform:translateX(-50%) translateY(10px); pointer-events:none; }
+  #wordmark{
+    position:absolute; top:22px; left:26px;
+    font-size:11px; font-weight:600; letter-spacing:0.52em; color:var(--txt-dim);
+  }
+  #hint{
+    position:absolute; top:22px; right:26px;
+    font-size:10px; font-weight:500; letter-spacing:0.16em; color:var(--txt-dim);
+    text-transform:uppercase;
+  }
+  #panel{
+    position:absolute; left:50%; bottom:26px; transform:translateX(-50%);
+    display:flex; align-items:center; gap:22px;
+    padding:14px 22px;
+    background:var(--panel-bg);
+    border:1px solid var(--panel-line);
+    border-radius:100px;
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+    pointer-events:auto;
+    transition: transform .6s ease, background .4s ease, border-color .4s ease;
+  }
+  .ctl{ display:flex; align-items:center; gap:10px; }
+  .ctl label{
+    font-size:10px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--txt-dim);
+  }
+  input[type=range]{
+    -webkit-appearance:none; appearance:none;
+    width:92px; height:22px; background:transparent; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:2px; border-radius:1px;
+    background: color-mix(in srgb, var(--txt) 28%, transparent);
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none;
+    width:12px; height:12px; border-radius:50%;
+    background:var(--accent); margin-top:-5px;
+    box-shadow:0 0 10px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  input[type=range]::-moz-range-track{
+    height:2px; border-radius:1px;
+    background: color-mix(in srgb, var(--txt) 28%, transparent);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:12px; height:12px; border:none; border-radius:50%;
+    background:var(--accent);
+    box-shadow:0 0 10px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  .sep{ width:1px; height:20px; background:var(--panel-line); }
+  #themes{ display:flex; gap:9px; }
+  .swatch{
+    width:15px; height:15px; border-radius:50%; border:none; cursor:pointer;
+    outline:1px solid rgba(255,255,255,0.15); outline-offset:2px;
+    transition: transform .2s ease, outline-color .2s ease;
+  }
+  .swatch:hover{ transform:scale(1.2); }
+  .swatch.active{ outline:2px solid var(--txt); }
+  #mode{
+    width:26px; height:26px; border:none; border-radius:50%; cursor:pointer;
+    background:transparent; color:var(--txt); display:grid; place-items:center;
+  }
+  #mode svg{ width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; }
+  #mode:hover{ color:var(--accent); }
+  #debug{
+    position:absolute; bottom:26px; left:26px;
+    font-family:ui-monospace, monospace; font-size:10px; letter-spacing:0.05em;
+    color:var(--txt-dim); display:none; white-space:pre;
+  }
+  #nogl{
+    position:fixed; inset:0; display:none; place-items:center; text-align:center;
+    color:var(--txt); font-family:system-ui, sans-serif; font-size:14px; line-height:1.7;
+  }
+  @media (max-width: 640px){
+    #panel{ gap:14px; padding:12px 16px; }
+    input[type=range]{ width:64px; }
+    #hint{ display:none; }
+  }
+</style>
 </head>
 <body>
-    <canvas id="canvas"></canvas>
-    <div id="error-message"></div>
-    <div id="controls">
-        <div class="header">
-            <h1>Blob Simulator</h1>
-        </div>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <div id="wordmark">LAVA</div>
+  <div id="hint">move to stir &nbsp;·&nbsp; click to pulse &nbsp;·&nbsp; H hides</div>
+  <div id="panel">
+    <div class="ctl"><label for="heat">Heat</label><input id="heat" type="range" min="0" max="1" step="0.001" value="0.5"></div>
+    <div class="ctl"><label for="goo">Goo</label><input id="goo" type="range" min="0" max="1" step="0.001" value="0.35"></div>
+    <div class="ctl"><label for="blobs">Blobs</label><input id="blobs" type="range" min="3" max="10" step="1" value="9"></div>
+    <div class="sep"></div>
+    <div id="themes"></div>
+    <div class="sep"></div>
+    <button id="mode" title="Dark / light">
+      <svg viewBox="0 0 24 24" id="moonIcon"><path d="M20 13.5A8.5 8.5 0 0 1 10.5 4 8.5 8.5 0 1 0 20 13.5z"/></svg>
+      <svg viewBox="0 0 24 24" id="sunIcon" style="display:none"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19"/></svg>
+    </button>
+  </div>
+</div>
+<div id="debug"></div>
+<div id="nogl"><div>This lava lamp needs WebGL2.<br>Try a recent Chrome or Firefox.</div></div>
 
-        <!-- Basic Properties -->
-        <div class="control-group">
-            <div class="control-label">
-                <span>Blob Size</span>
-                <span id="size-value" class="value-display">2.0</span>
-            </div>
-            <input type="range" id="size" min="0.1" max="2.0" step="0.1" value="2.0">
-        </div>
+<script>
+'use strict';
+/* ============================================================
+   LAVA — a fullscreen, physically-motivated lava lamp.
+   Raymarched SDF metaballs (WebGL2 fragment shader) fed by a
+   CPU convection sim: wax heats at the bulb, gains buoyancy,
+   rises, cools, stalls, sinks. The cursor is an invisible
+   glass ball with real collision response.
+   Zero dependencies.
+   ============================================================ */
 
-        <div class="control-group">
-            <div class="control-label">
-                <span>Amount</span>
-                <span id="amount-value" class="value-display">5</span>
-            </div>
-            <input type="range" id="amount" min="1" max="10" step="1" value="5">
-        </div>
+const MAXB = 10;  // wax blobs
+const MAXP = 16;  // drifting micro-droplets
+const BOTTOM = -1.16;   // blobs re-melt just below the frame
 
-        <div class="control-group">
-            <div class="control-label">
-                <span>Speed</span>
-                <span id="speed-value" class="value-display">0.1</span>
-            </div>
-            <input type="range" id="speed" min="0.1" max="2.0" step="0.1" value="0.1">
-        </div>
+/* jam-page star system: 600 particles in pixel space, camera at z=100 */
+const STAR_N = 600;
+const starPos = new Float32Array(STAR_N*3);
+const starMeta = [];
 
-        <div class="separator"></div>
+/* ---------- shaders ---------- */
 
-        <!-- Physical Properties -->
-        <div class="control-group">
-            <div class="control-label">
-                <span>Viscosity</span>
-                <span id="viscosity-value" class="value-display">1</span>
-            </div>
-            <input type="range" id="viscosity" min="0" max="1" step="0.001" value="1">
-        </div>
+const VERT = `#version 300 es
+void main(){
+  vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2));
+  gl_Position = vec4(p*2.0-1.0, 0.0, 1.0);
+}`;
 
-        <div class="control-group">
-            <div class="control-label">
-                <span>Dissipation</span>
-                <span id="dissipation-value" class="value-display">0</span>
-            </div>
-            <input type="range" id="dissipation" min="0" max="1" step="0.001" value="0">
-        </div>
+const FRAG = `#version 300 es
+precision highp float;
+out vec4 fragColor;
 
-        <div class="separator"></div>
+#define MAXB ${MAXB}
+#define MAXP ${MAXP}
 
-        <!-- Color Properties -->
-        <div class="control-group">
-            <div class="control-label">
-                <span>Color Scale</span>
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <span id="color-value" class="value-display">0.109</span>
-                    <div id="color-preview" class="color-preview"></div>
-                </div>
-            </div>
-            <input type="range" id="color" min="0" max="1" step="0.001" value="0.109">
-        </div>
+uniform vec2  uRes;
+uniform float uTime;
+uniform int   uNB;
+uniform int   uNP;
+uniform vec4  uBlob[MAXB];    // xyz, radius
+uniform vec4  uBlobEx[MAXB];  // stretch, temp, -, -
+uniform vec4  uPart[MAXP];    // xyz, radius
+uniform vec4  uMouse;         // xyz, radius (0 = inactive)
+uniform float uGoo;           // smooth-min k
+uniform float uMode;          // 0 dark, 1 light
+uniform float uExpo;
+uniform vec3  uCam;           // orbiting camera position
+uniform vec3  uWaxCold, uWaxHot, uLiqTop, uLiqBot, uBulbCol, uGlowCol;
 
-        <div class="control-group">
-            <div class="control-label">
-                <span>Color Range</span>
-                <span id="range-value" class="value-display">0</span>
-            </div>
-            <input type="range" id="range" min="0" max="1" step="0.001" value="0">
-        </div>
-    </div>
+const float CAMZ  = 3.2;
+const float ZH    = 0.64;
+const float POOLY = -1.065;
+const vec3  BULB  = vec3(0.0, -1.55, 0.10);
 
-    <script src="blob-simulator.js"></script>
+float smin(float a, float b, float k){
+  float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
+  return mix(b, a, h) - k*h*(1.0-h);
+}
+
+/* wax field: a thin molten layer at the base + stretchy blobs, cursor carved out */
+float sdWax(vec3 p){
+  float d = p.y - (POOLY + 0.020*sin(p.x*2.2 + uTime*0.35)
+                         + 0.012*sin(p.x*5.1 - uTime*0.22)
+                         + 0.010*sin(p.z*3.4 - uTime*0.27));
+  for (int i=0;i<MAXB;i++){
+    if (i>=uNB) break;
+    vec3 q = p - uBlob[i].xyz;
+    float st = uBlobEx[i].x;              // vertical stretch (rising blobs elongate)
+    q.y /= st;
+    q.xz *= sqrt(st);                     // volume preserving squash
+    float ql = length(q);
+    float bd = (ql - uBlob[i].w) * min(st, inversesqrt(st));
+    // low-order lumps drifting around each blob — wax never sits as a perfect sphere
+    vec3 nq = q / max(ql, 1e-4);
+    float fi = float(i);
+    float lump = 0.65*sin(dot(nq, vec3(1.9, 1.2, 0.8))*1.6 + uTime*0.45 + fi*2.4)
+               + 0.35*sin(dot(nq, vec3(-1.1, 2.3, 1.6))*2.2 - uTime*0.34 + fi*1.7);
+    bd -= uBlob[i].w * 0.042 * lump;
+    d = smin(d, bd, uGoo);
+  }
+  if (uMouse.w > 0.001){                  // the pointer carves through the wax
+    float md = length(p - uMouse.xyz) - uMouse.w;
+    float h = clamp(0.5 - 0.5*(d + md)/0.06, 0.0, 1.0);
+    d = mix(d, -md, h) + 0.06*h*(1.0-h);
+  }
+  return d;
+}
+
+float sdParts(vec3 p){
+  float d = 1e5;
+  for (int i=0;i<MAXP;i++){
+    if (i>=uNP) break;
+    d = min(d, length(p - uPart[i].xyz) - uPart[i].w);
+  }
+  return d;
+}
+
+float map(vec3 p){ return min(sdWax(p), sdParts(p)); }
+
+vec3 calcN(vec3 p){
+  const vec2 e = vec2(1.0,-1.0)*0.0013;
+  return normalize( e.xyy*map(p+e.xyy) + e.yyx*map(p+e.yyx)
+                  + e.yxy*map(p+e.yxy) + e.xxx*map(p+e.xxx));
+}
+
+/* local wax temperature: inverse-square blend of blob temps + the hot base layer */
+float waxTemp(vec3 p){
+  float dp = max(p.y - POOLY, 0.03);
+  float ws = 1.0/(dp*dp);
+  float tw = ws * 0.92;
+  for (int i=0;i<MAXB;i++){
+    if (i>=uNB) break;
+    float dd = max(length(p - uBlob[i].xyz) - uBlob[i].w, 0.03);
+    float wi = 1.0/(dd*dd);
+    tw += wi * uBlobEx[i].y;
+    ws += wi;
+  }
+  return tw/ws;
+}
+
+vec3 background(vec2 uv){
+  // the light lives along the whole bottom edge (warm) and top edge (faint echo)
+  float aspR = max(uRes.x/uRes.y, 0.6);
+  vec2 nc = vec2(uv.x/aspR, uv.y);                          // -1..1 both axes
+  float edge = length(nc*vec2(1.08, 0.92));                 // radial jar curvature
+  float dome = exp(-pow(length(vec2(nc.x*0.9, (uv.y+0.25)*0.75)), 2.0)*1.5);
+  float bot = exp(-pow((uv.y+1.0)*3.0, 2.0)) * (0.82 + 0.18*exp(-nc.x*nc.x*1.5));
+  float top = exp(-pow((1.0-uv.y)*3.2, 2.0)) * (0.85 + 0.15*exp(-nc.x*nc.x*1.5));
+  vec3 tint = mix(uLiqBot, uLiqTop, clamp(uv.y*0.5+0.5, 0.0, 1.0));
+  vec3 dark = uBulbCol*bot*0.42 + uGlowCol*top*0.085 + tint*dome*0.22;
+  vec3 lite = vec3(1.0) - vec3(0.085,0.09,0.095)*smoothstep(0.35, 1.25, edge)
+            + uBulbCol*bot*0.07 - vec3(0.045,0.05,0.055)*top;
+  return mix(dark, lite, uMode);
+}
+
+vec3 aces(vec3 x){
+  return clamp(x*(2.51*x+0.03)/(x*(2.43*x+0.59)+0.14), 0.0, 1.0);
+}
+
+/* wax-only normal (bubbles must not dent the wax shading) */
+vec3 calcNW(vec3 p){
+  const vec2 e = vec2(1.0,-1.0)*0.0013;
+  return normalize( e.xyy*sdWax(p+e.xyy) + e.yyx*sdWax(p+e.yyx)
+                  + e.yxy*sdWax(p+e.yxy) + e.xxx*sdWax(p+e.xxx));
+}
+
+/* full wax shading — reused for direct hits and for wax seen through a bubble */
+vec3 shadeWax(vec3 p, vec3 rd){
+  vec3 n = calcNW(p);
+  vec3 vd = -rd;
+  float T = waxTemp(p);
+  vec3 albedo = mix(uWaxCold, uWaxHot, smoothstep(0.22, 0.88, T));
+
+  vec3 ld = vec3(p.x*0.9, BULB.y, BULB.z) - p;   // line light spanning the bottom edge
+  float ldist = length(ld); ld /= ldist;
+  float atten = 1.0/(1.0 + ldist*ldist*0.5);
+  float wrap = clamp((dot(n, ld) + 0.55)/1.55, 0.0, 1.0);
+  wrap *= wrap;
+
+  // translucency: how much wax the light crosses to reach here
+  float th = 0.0;
+  th += clamp(-sdWax(p + ld*0.05), 0.0, 0.05);
+  th += clamp(-sdWax(p + ld*0.12), 0.0, 0.12);
+  th += clamp(-sdWax(p + ld*0.22), 0.0, 0.22);
+  th += clamp(-sdWax(p + ld*0.35), 0.0, 0.35);
+  float trans = exp(-th*10.0);
+
+  float fres = pow(1.0 - clamp(dot(n, vd), 0.0, 1.0), 3.0);
+
+  vec3 wax = albedo * uBulbCol * wrap * atten * 1.9;       // warm key
+  wax += albedo * uBulbCol * trans * atten * 1.3;          // subsurface bleed
+  vec3 amb = mix(uLiqBot, uLiqTop, clamp(p.y*0.5+0.5, 0.0, 1.0));
+  wax += albedo * amb * mix(0.35, 0.60, uMode);            // surround ambience
+  wax += albedo * uGlowCol * clamp(n.y, 0.0, 1.0) * exp(-(1.0-p.y)*1.2) * 0.22; // top-edge fill
+  wax += mix(uGlowCol*0.15, amb*0.60, uMode) * fres;       // thin silhouette rim
+  wax += uWaxHot * pow(T, 3.0) * atten * 0.55;             // molten core glow
+
+  vec3 h1 = normalize(ld + vd);
+  wax += uBulbCol * pow(max(dot(n,h1),0.0), 48.0) * atten * (0.3 + fres);
+  vec3 l2 = normalize(vec3(0.45, 0.85, 0.55));
+  vec3 h2 = normalize(l2 + vd);
+  wax += vec3(1.0) * pow(max(dot(n,h2),0.0), 110.0) * (0.35 + fres*0.8);
+
+  return pow(aces(wax * uExpo), vec3(1.0/2.2));   // filmic grade for the wax only
+}
+
+/* short wax-only march for rays bent through a bubble */
+float marchWax(vec3 ro2, vec3 rd2){
+  float t = 0.02;
+  for (int i=0;i<40;i++){
+    float d = sdWax(ro2 + rd2*t);
+    if (d < 0.0016) return t;
+    t += d*0.95;
+    if (t > 2.6) break;
+  }
+  return -1.0;
+}
+
+void main(){
+  vec2 uv = (2.0*gl_FragCoord.xy - uRes)/uRes.y;
+  // orbiting camera, always looking at the heart of the lamp (starfield parallax)
+  vec3 ro = uCam;
+  vec3 fw = -normalize(ro);
+  vec3 rt = normalize(vec3(-fw.z, 0.0, fw.x));
+  vec3 up = cross(rt, fw);
+  vec3 rd = normalize(rt*uv.x + up*uv.y + fw*CAMZ);
+
+  float t0 = (ZH - ro.z)/rd.z;
+  float t1 = (-ZH - ro.z)/rd.z;
+  float t = t0;
+  int   mat = 0;
+  vec3  p = ro;
+  for (int i=0;i<96;i++){
+    p = ro + rd*t;
+    float dw = sdWax(p);
+    float dpt = sdParts(p);
+    float d = min(dw, dpt);
+    if (d < 0.0011*t){ mat = (dw < dpt) ? 1 : 2; break; }
+    t += d*0.85;
+    if (t > t1) break;
+  }
+
+  vec3 col;
+
+  if (mat == 1){
+    col = shadeWax(p, rd);
+  } else if (mat == 2){
+    // bubbles: no paint, just optics — they bend, reflect, and catch the light
+    vec3 n = calcN(p);
+    vec3 vd = -rd;
+    float ndv = clamp(dot(n, vd), 0.0, 1.0);
+    float fres = pow(1.0 - ndv, 3.0);
+    vec3 ld = vec3(p.x*0.9, BULB.y, BULB.z) - p;   // same bottom-edge line light
+    float ldist = length(ld); ld /= ldist;
+    float atten = 1.0/(1.0 + ldist*ldist*0.5);
+
+    // refraction: bend the ray and keep marching — wax behind shows through
+    vec3 rr = refract(rd, n, 1.25);
+    vec3 bend = mix(reflect(rd, n), rr, step(0.5, dot(rr, rr)));
+    float tw = marchWax(p + bend*0.03, bend);
+    if (tw > 0.0){
+      col = shadeWax(p + bend*(0.03 + tw), bend) * 0.94;   // the blob, lensed
+    } else {
+      col = background(uv + (bend.xy - rd.xy)*1.4);
+    }
+    // fresnel reflection of the lit vessel
+    col += background(uv + reflect(rd, n).xy*0.9) * fres * 0.8;
+    // bulb light grazing the skin (keeps them visible in the dark, physically)
+    col += uBulbCol * atten * fres * (dot(n, ld)*0.5 + 0.5) * 0.9 * (1.0-uMode);
+    // against a bright vessel a bubble's rim goes dark — light bent away
+    col *= 1.0 - fres*0.55*uMode;
+    // the source itself caught in the surface, plus the cool top light
+    col += uBulbCol * pow(max(dot(reflect(rd, n), ld), 0.0), 160.0) * 1.6;
+    vec3 l2 = normalize(vec3(0.45, 0.85, 0.55));
+    col += vec3(1.0) * pow(max(dot(n, normalize(l2+vd)), 0.0), 140.0) * 0.7;
+    col = clamp(col, 0.0, 1.0);
+  } else {
+    col = background(uv);        // stays a true black / true white
+  }
+
+  // alpha marks coverage so the star underlay only shows through the liquid
+  fragColor = vec4(col, mat == 0 ? 0.0 : 1.0);
+}`;
+
+/* star underlay: the jam page's particle system, verbatim, as round GL points */
+const SVERT = `#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uVP;
+uniform float uPx;   // half the framebuffer height, THREE-style size attenuation
+void main(){
+  gl_Position = uVP * vec4(aPos, 1.0);
+  gl_PointSize = clamp(2.0 * uPx / max(gl_Position.w, 1.0), 1.0, 16.0);
+}`;
+const SFRAG = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main(){
+  float d = length(gl_PointCoord - 0.5);
+  float a = smoothstep(0.5, 0.22, d) * 0.5;   // round dot, 50% opacity like the original
+  fragColor = vec4(vec3(a), a);               // premultiplied white
+}`;
+
+/* post pass: mip-chain bloom (light halation off hot wax + bulb), vignette, grain */
+const POST = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+uniform sampler2D uTex;
+uniform vec2  uRes;
+uniform float uTime, uMode, uBloom;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes;
+  vec3 col = texture(uTex, uv).rgb;
+  vec3 bl = textureLod(uTex, uv, 2.0).rgb*0.20
+          + textureLod(uTex, uv, 3.0).rgb*0.30
+          + textureLod(uTex, uv, 4.0).rgb*0.30
+          + textureLod(uTex, uv, 5.0).rgb*0.20;
+  bl = max(bl - mix(0.14, 0.72, uMode), vec3(0.0));
+  col = 1.0 - (1.0-col)*(1.0-clamp(bl*uBloom, 0.0, 1.0));   // screen blend
+  vec2 sc = uv*2.0 - 1.0;
+  col *= 1.0 - mix(0.26, 0.05, uMode)*pow(dot(sc*0.7, sc*0.7), 1.2);
+  col += (hash(gl_FragCoord.xy + fract(uTime)*vec2(17.0,29.0)) - 0.5)*(2.0/255.0);
+  fragColor = vec4(col, 1.0);
+}`;
+
+/* ---------- themes ---------- */
+
+const THEMES = [
+  { name:'Classic', css:['#ff8a2a','#b3172d'],
+    dark:{ waxCold:[.60,.045,.10], waxHot:[2.0,.62,.16], liqTop:[.06,.05,.05], liqBot:[.10,.04,.02],
+           bulb:[1.9,.85,.38], glow:[1.5,.42,.20], expo:1.05 },
+    light:{ waxCold:[.68,.04,.10], waxHot:[1.9,.48,.10], liqTop:[.99,.98,.96], liqBot:[1.0,.93,.85],
+           bulb:[1.35,.85,.52], glow:[1.2,.45,.22], expo:1.12 } },
+  { name:'Magma', css:['#ff4d6d','#ffd166'],
+    dark:{ waxCold:[.55,.03,.16], waxHot:[2.1,.42,.30], liqTop:[.05,.05,.07], liqBot:[.09,.03,.05],
+           bulb:[1.9,.55,.45], glow:[1.6,.30,.35], expo:1.05 },
+    light:{ waxCold:[.62,.03,.18], waxHot:[2.0,.38,.28], liqTop:[.96,.97,.99], liqBot:[.93,.94,1.0],
+           bulb:[1.5,.6,.6], glow:[1.4,.3,.4], expo:1.12 } },
+  { name:'Emerald', css:['#9ef01a','#0c7a5e'],
+    dark:{ waxCold:[.02,.30,.16], waxHot:[.85,1.9,.35], liqTop:[.04,.06,.05], liqBot:[.03,.08,.05],
+           bulb:[.75,1.7,.75], glow:[.45,1.4,.45], expo:1.05 },
+    light:{ waxCold:[.02,.32,.16], waxHot:[.70,1.8,.28], liqTop:[.96,.99,.965], liqBot:[.92,.98,.93],
+           bulb:[.7,1.35,.7], glow:[.4,1.2,.4], expo:1.12 } },
+  { name:'Ultraviolet', css:['#d94cff','#4c2bff'],
+    dark:{ waxCold:[.24,.02,.42], waxHot:[1.8,.45,2.1], liqTop:[.05,.04,.07], liqBot:[.07,.03,.09],
+           bulb:[1.3,.6,2.0], glow:[1.1,.35,1.7], expo:1.05 },
+    light:{ waxCold:[.28,.02,.48], waxHot:[1.7,.38,2.0], liqTop:[.975,.96,.995], liqBot:[.94,.92,.99],
+           bulb:[1.1,.7,1.6], glow:[.9,.4,1.4], expo:1.12 } },
+  { name:'Cosmos', css:['#8bd5ff','#3a2bd0'],
+    dark:{ waxCold:[.10,.06,.38], waxHot:[.55,1.5,2.2], liqTop:[.03,.04,.08], liqBot:[.05,.05,.10],
+           bulb:[.65,.9,1.9], glow:[.4,.7,1.6], expo:1.05 },
+    light:{ waxCold:[.12,.07,.42], waxHot:[.45,1.3,2.0], liqTop:[.955,.965,.985], liqBot:[.90,.92,.97],
+           bulb:[.7,.9,1.5], glow:[.5,.7,1.3], expo:1.12 } },
+];
+
+/* ---------- GL setup ---------- */
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false,
+  powerPreference:'high-performance', preserveDrawingBuffer:false });
+if (!gl){
+  document.getElementById('nogl').style.display = 'grid';
+  document.getElementById('ui').style.display = 'none';
+  throw new Error('WebGL2 unavailable');
+}
+
+let progScene = null, progPost = null, progStars = null, U = {}, UP = {}, US = {};
+let sceneTex = null, sceneFBO = null, starVAO = null, starBuf = null;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function makeProg(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+function buildPrograms(){
+  progScene = makeProg(VERT, FRAG);
+  gl.useProgram(progScene);
+  U = {};
+  for (const n of ['uRes','uTime','uNB','uNP','uMouse','uGoo','uMode','uExpo','uCam',
+                   'uWaxCold','uWaxHot','uLiqTop','uLiqBot','uBulbCol','uGlowCol'])
+    U[n] = gl.getUniformLocation(progScene, n);
+  U.uBlob = gl.getUniformLocation(progScene, 'uBlob[0]');
+  U.uBlobEx = gl.getUniformLocation(progScene, 'uBlobEx[0]');
+  U.uPart = gl.getUniformLocation(progScene, 'uPart[0]');
+
+  progPost = makeProg(VERT, POST);
+  gl.useProgram(progPost);
+  UP = {};
+  for (const n of ['uTex','uRes','uTime','uMode','uBloom'])
+    UP[n] = gl.getUniformLocation(progPost, n);
+
+  progStars = makeProg(SVERT, SFRAG);
+  US = { uVP: gl.getUniformLocation(progStars, 'uVP'),
+         uPx: gl.getUniformLocation(progStars, 'uPx') };
+  starVAO = gl.createVertexArray();
+  starBuf = gl.createBuffer();
+  gl.bindVertexArray(starVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, starPos.byteLength, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  sceneFBO = gl.createFramebuffer();
+  sceneTex = gl.createTexture();
+}
+function allocSceneTex(){
+  if (!sceneTex) return;
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0,
+                gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+buildPrograms();
+
+canvas.addEventListener('webglcontextlost', e => e.preventDefault());
+canvas.addEventListener('webglcontextrestored', () => { buildPrograms(); allocSceneTex(); });
+
+/* ---------- state ---------- */
+
+const Q = new URLSearchParams(location.search);
+const S = {
+  heat: Q.has('heat') ? +Q.get('heat') : 0.5,
+  goo:  Q.has('goo')  ? +Q.get('goo')  : 0.35,
+  blobs: Q.has('blobs') ? Math.min(Math.max(Math.round(+Q.get('blobs')), 3), 10) : 9,
+  theme: Math.min(Math.max(+(Q.get('theme') || 0), 0), THEMES.length-1),
+  light: Q.has('light'),
+  paused: false, uiHidden: false, debug: Q.has('debug'),
+};
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) S.heat = 0.2;
+
+let W = 1, H = 1, aspect = 1, dpr = 1, resScale = 1;
+let starSeeded = false;
+
+function resize(){
+  if (!window.innerWidth || !window.innerHeight) return;  // headless/early-load safety
+  W = window.innerWidth; H = window.innerHeight;
+  aspect = W/H;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width  = Math.max(2, Math.round(W * dpr * resScale));
+  canvas.height = Math.max(2, Math.round(H * dpr * resScale));
+  allocSceneTex();
+  if (!starSeeded) seedStars();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// seed the star system exactly like the jam page (pixel coordinates)
+function seedStars(){
+  if (W <= 10) return;                 // viewport not real yet; resize() retries
+  starSeeded = true;
+  for (let i = 0; i < STAR_N; i++){
+    starPos[i*3]   = (Math.random() - 0.5) * W;
+    starPos[i*3+1] = (Math.random() - 0.5) * H;
+    starPos[i*3+2] = -250 + Math.random() * 310;
+    starMeta[i] = { velocity: (Math.random() - 0.5) * 0.2,
+                    baseX: starPos[i*3], baseY: starPos[i*3+1] };
+  }
+}
+seedStars();
+
+/* ---------- convection physics ---------- */
+
+function rnd(a, b){ return a + Math.random()*(b-a); }
+function smooth(a, b, x){ const t = Math.min(Math.max((x-a)/(b-a), 0), 1); return t*t*(3-2*t); }
+
+const RADII = [0.295, 0.245, 0.215, 0.19, 0.17, 0.155, 0.135, 0.26, 0.205, 0.15];
+const blobs = RADII.map((r, i) => ({
+  idx: i, baseR: r,
+  x: ((i + 0.5)/RADII.length*2 - 1)*0.8 + rnd(-0.12, 0.12),   // start spread along the lanes
+  y: i < S.blobs ? rnd(-0.9, 0.4) : BOTTOM - 0.6,
+  z: rnd(-0.18, 0.18),
+  vx: 0, vy: 0, vz: 0,
+  r: i < S.blobs ? r : 0.001, T: rnd(0.25, 0.65),
+  stretch: 1, zPref: rnd(-0.16, 0.16),
+  homeX: ((i + 0.5)/RADII.length*2 - 1)*0.8,   // spread lanes → no permanent mega-blob
+  heatK: rnd(0.9, 1.35),                        // personal thermostat → desynced cycles
+  f1: rnd(0.10, 0.23), f2: rnd(0.08, 0.2), ph: rnd(0, 6.28), ph2: rnd(0, 6.28),
+  dens: rnd(-0.03, 0.03),                       // per-blob density quirk → varied cycles
+  state: 1, relT: rnd(0.84, 0.90), meltUntil: 0, // docked-in-melt / free-floating cycle
+}));
+
+const parts = Array.from({length: 14}, () => {
+  const r = rnd(0.0045, 0.013);
+  return {
+    x: rnd(-0.6, 0.6), y: rnd(-1.1, 1.1), z: rnd(-0.38, 0.38),
+    vx: 0, vy: 0, r, spd: 0.02 + r*r*260,       // Stokes-ish: bigger bubbles rise faster
+    f: rnd(0.3, 0.9), ph: rnd(0, 6.28),
+  };
+});
+
+const mouse = { x:0, y:0, vx:0, vy:0, r:0, targetR:0, has:false, lastT:0 };
+let simTime = 0;
+
+function physics(dt){
+  const heaterMult = 0.6 + S.heat*1.3;
+  const drag = 0.9 + S.goo*1.9;
+  const stretchAmt = 1.8 - S.goo*1.1;
+  const xmax = Math.max(aspect*0.94, 0.5);
+
+  for (const b of blobs){
+    // --- population knob: retired blobs shrink and sink away; new ones melt in ---
+    const active = b.idx < S.blobs;
+    b.r += ((active ? b.baseR : 0.001) - b.r)*Math.min(1, dt*2.5);
+
+    // --- thermodynamics ---
+    const heat = 1 - smooth(-1.25, -0.85, b.y);       // heating happens AT the melt layer only
+    const cool = smooth(0.10, 0.95, b.y);             // upper liquid
+    const mass = Math.max(b.r, 0.05)/0.19;
+    b.T += ((heat*0.24*heaterMult*b.heatK)*(1.05 - b.T) - cool*0.055*b.T - 0.028*b.T) * dt / mass;
+    b.T = Math.min(Math.max(b.T, 0), 1.05);
+
+    // --- buoyancy: hotter than neutral rises, colder sinks ---
+    const Tn = 0.40 + 0.08*(b.y + 1) + b.dens;
+    let ax = Math.sin(simTime*b.f1 + b.ph)*0.06 + (b.homeX*xmax*0.72 - b.x)*0.075
+           + Math.sin(simTime*0.06 + b.y*1.3)*0.03;   // slow ambient convection stir
+    let ay = active ? 1.7*(b.T - Tn) : -2.2;          // retired blobs dive below the frame
+
+    // melt-dock cycle: cold blobs anchor in the layer, cook, then pop free hot
+    const restL = -1.05 - b.r*0.28;
+    if (active){
+      if (b.state === 0){
+        ay = (restL - b.y)*6 - b.vy*3;                // held by the melt while reheating
+        if (b.T > b.relT || (simTime > b.meltUntil && b.T > 0.74)){
+          b.state = 1; b.vy += 0.15;                  // surface-tension release
+        }
+      } else if (b.y < restL + 0.06 && b.T < 0.60){
+        b.state = 0;                                  // re-absorbed by the layer
+        b.meltUntil = simTime + (3 + Math.random()*4)*mass;
+      }
+    }
+    let az = (b.zPref - b.z)*0.45 + Math.sin(simTime*b.f2 + b.ph2)*0.02;
+
+    // --- top wall stays a soft cushion; sides and floor bounce (in integrate) ---
+    if (b.y >  0.97 - b.r) ay += (0.97 - b.r - b.y)*7 - b.vy*2;
+
+    b.vx += ax*dt; b.vy += ay*dt; b.vz += az*dt;
+    const dr = Math.exp(-drag*dt);
+    b.vx *= dr; b.vy *= dr; b.vz *= dr;
+  }
+
+  // --- blob-blob soft separation (lets them kiss + merge visually) ---
+  for (let i=0;i<blobs.length;i++) for (let j=i+1;j<blobs.length;j++){
+    const a = blobs[i], c = blobs[j];
+    const dx = c.x-a.x, dy = c.y-a.y, dz = c.z-a.z;
+    const d = Math.hypot(dx, dy, dz), min = (a.r + c.r)*0.95;
+    if (d < min && d > 1e-4){
+      const f = (min - d)/d * 4.5;
+      const ma = c.r/(a.r+c.r), mc = a.r/(a.r+c.r);
+      a.vx -= dx*f*ma*dt; a.vy -= dy*f*ma*dt; a.vz -= dz*f*ma*dt;
+      c.vx += dx*f*mc*dt; c.vy += dy*f*mc*dt; c.vz += dz*f*mc*dt;
+    }
+  }
+
+  // --- cursor: an invisible glass ball with real collision response ---
+  mouse.r += (mouse.targetR - mouse.r)*Math.min(1, dt*8);
+  if (mouse.r > 0.005){
+    for (const b of blobs){
+      const dx = b.x-mouse.x, dy = b.y-mouse.y, dz = b.z;
+      const d = Math.hypot(dx, dy, dz), min = mouse.r + b.r*0.88;
+      if (d < min && d > 1e-4){
+        const nx = dx/d, ny = dy/d, nz = dz/d;
+        const push = (min - d);
+        b.x += nx*push*0.45; b.y += ny*push*0.45; b.z += nz*push*0.45;
+        const rvx = b.vx - mouse.vx, rvy = b.vy - mouse.vy;
+        const vn = rvx*nx + rvy*ny + b.vz*nz;
+        if (vn < 0){                                   // bounce
+          b.vx -= nx*vn*1.45; b.vy -= ny*vn*1.45; b.vz -= nz*vn*1.45;
+        }
+        b.vx += mouse.vx*0.22; b.vy += mouse.vy*0.22;  // drag along with a swipe
+      }
+    }
+  }
+
+  // --- integrate + wall bounces + squash/stretch from vertical motion ---
+  for (const b of blobs){
+    b.x += b.vx*dt; b.y += b.vy*dt; b.z += b.vz*dt;
+    b.z = Math.min(Math.max(b.z, -0.24), 0.24);
+
+    // side walls: real bounce
+    const xw = xmax - b.r;
+    if (b.x >  xw){ b.x =  xw; if (b.vx > 0) b.vx *= -0.55; }
+    if (b.x < -xw){ b.x = -xw; if (b.vx < 0) b.vx *= -0.55; }
+
+    // floor: fast impacts bounce off the molten layer, slow ones melt into it
+    if (b.idx < S.blobs){
+      const rest = -1.05 - b.r*0.28;
+      if (b.y < rest){
+        if (b.vy < -0.18){ b.y = rest; b.vy *= -0.52; }
+        else { b.y += (rest - b.y)*Math.min(1, dt*3); b.vy *= Math.exp(-1.6*dt); }
+      }
+    } else if (b.y < -2.2){ b.y = -2.2; b.vy = 0; }   // retired blobs park out of sight
+
+    // self-heal from any numeric mishap (NaN fails these checks)
+    if (!(b.x > -9 && b.x < 9)){ b.x = 0; b.vx = 0; }
+    if (!(b.y > -9 && b.y < 9)){ b.y = -1.05 - b.r*0.28; b.vy = 0; }
+    const target = Math.min(Math.max(1 + stretchAmt*(0.85*b.vy + 1.4*b.vy*Math.abs(b.vy)), 0.75), 1.7);
+    b.stretch += (target - b.stretch)*Math.min(1, dt*5);
+  }
+
+  // --- micro-droplets riding the convection ---
+  for (const q of parts){
+    const rise = q.spd*(1 + 0.9*(1 - smooth(-1.1, 0.3, q.y)));
+    q.vy += (rise - q.vy)*Math.min(1, dt*2);
+    q.vx += (Math.sin(simTime*q.f + q.ph)*0.03 - q.vx)*Math.min(1, dt*2);
+    if (mouse.r > 0.005){
+      const dx = q.x-mouse.x, dy = q.y-mouse.y;
+      const d = Math.hypot(dx, dy), min = mouse.r + 0.05;
+      if (d < min && d > 1e-4){
+        q.vx += dx/d*(min-d)*14*dt*60*0.02; q.vy += dy/d*(min-d)*14*dt*60*0.02;
+        q.x += dx/d*(min-d)*0.5; q.y += dy/d*(min-d)*0.5;
+      }
+    }
+    q.x += q.vx*dt; q.y += q.vy*dt;
+    q.z += Math.sin(simTime*q.f*0.7 + q.ph)*0.02*dt;
+    if (q.y > 1.12){ q.y = -1.14; q.x = rnd(-0.92, 0.92)*Math.min(aspect, 2.4); q.z = rnd(-0.38, 0.38); }  // born along the bottom edge light
+    if (q.x >  aspect+0.1) q.x = -aspect-0.1;
+    if (q.x < -aspect-0.1) q.x =  aspect+0.1;
+  }
+}
+
+/* ---------- pointer = glass ball ---------- */
+
+const CAMZ = 3.2;
+let camX = 0, camY = 0;   // orbiting camera (updated each frame)
+
+// perspective * lookAt for the star camera (fov 75°, target origin, up +y)
+const starVPm = new Float32Array(16);
+function starVP(ex, ey, ez){
+  let zx = ex, zy = ey, zz = ez;
+  const zl = Math.hypot(zx, zy, zz); zx /= zl; zy /= zl; zz /= zl;
+  let xx = zz, xz = -zx;
+  const xl = Math.hypot(xx, xz) || 1; xx /= xl; xz /= xl;
+  const yx = zy*xz, yy = zz*xx - zx*xz, yz = -zy*xx;
+  const tx = -(xx*ex + xz*ez), ty = -(yx*ex + yy*ey + yz*ez), tz = -(zx*ex + zy*ey + zz*ez);
+  const f = 1.30322537, asp = W/H, near = 0.1, far = 1000;
+  const A = (far+near)/(near-far), B = 2*far*near/(near-far), fa = f/asp;
+  starVPm[0]=fa*xx;  starVPm[1]=f*yx;  starVPm[2]=A*zx;    starVPm[3]=-zx;
+  starVPm[4]=0;      starVPm[5]=f*yy;  starVPm[6]=A*zy;    starVPm[7]=-zy;
+  starVPm[8]=fa*xz;  starVPm[9]=f*yz;  starVPm[10]=A*zz;   starVPm[11]=-zz;
+  starVPm[12]=fa*tx; starVPm[13]=f*ty; starVPm[14]=A*tz+B; starVPm[15]=-tz;
+  return starVPm;
+}
+
+function toWorld(cx, cy){
+  // trace the pointer's ray from the orbiting camera to the z=0 plane
+  const ux = (2*cx - W)/H, uy = 1 - 2*cy/H;
+  let fx = -camX, fy = -camY, fz = -CAMZ;
+  const fl = Math.hypot(fx, fy, fz); fx /= fl; fy /= fl; fz /= fl;
+  let rx = -fz, ry = 0, rz = fx;
+  const rl = Math.hypot(rx, ry, rz); rx /= rl; rz /= rl;
+  const upx = ry*fz - rz*fy, upy = rz*fx - rx*fz, upz = rx*fy - ry*fx;
+  const dx = rx*ux + upx*uy + fx*CAMZ;
+  const dy = ry*ux + upy*uy + fy*CAMZ;
+  const dz = rz*ux + upz*uy + fz*CAMZ;
+  const t = -CAMZ/dz;
+  return [ camX + dx*t, camY + dy*t ];
+}
+window.addEventListener('pointermove', e => {
+  const [wx, wy] = toWorld(e.clientX, e.clientY);
+  const now = performance.now();
+  const dt = Math.min(Math.max((now - mouse.lastT)/1000, 1/240), 0.1);
+  if (mouse.has){
+    mouse.vx = mouse.vx*0.6 + ((wx - mouse.x)/dt)*0.4;
+    mouse.vy = mouse.vy*0.6 + ((wy - mouse.y)/dt)*0.4;
+  }
+  mouse.x = wx; mouse.y = wy; mouse.lastT = now;
+  mouse.has = true; mouse.targetR = 0.09;
+  uiWake();
+}, { passive:true });
+
+window.addEventListener('pointerdown', e => {
+  const [wx, wy] = toWorld(e.clientX, e.clientY);
+  mouse.x = wx; mouse.y = wy; mouse.has = true;
+  mouse.targetR = 0.09;
+  mouse.r = Math.max(mouse.r, 0.14);              // pressure pop
+  for (const b of blobs){                          // pressure pulse
+    const dx = b.x-wx, dy = b.y-wy;
+    const d = Math.hypot(dx, dy, b.z);
+    if (d < 0.75 && d > 1e-4){
+      const k = (1 - d/0.75)*1.1;
+      b.vx += dx/d*k; b.vy += dy/d*k; b.vz += b.z/d*k*0.5;
+      b.T += k*0.05;
+    }
+  }
+}, { passive:true });
+
+window.addEventListener('pointerleave', () => { mouse.targetR = 0; });
+document.addEventListener('mouseleave', () => { mouse.targetR = 0; });
+window.addEventListener('pointerup', e => {
+  if (e.pointerType !== 'mouse') mouse.targetR = 0;   // touch lifts the ball away
+}, { passive:true });
+window.addEventListener('blur', () => { mouse.vx = 0; mouse.vy = 0; });
+
+/* ---------- UI ---------- */
+
+const ui = document.getElementById('ui');
+const dbg = document.getElementById('debug');
+if (S.debug) dbg.style.display = 'block';
+window.addEventListener('error', e => {
+  dbg.style.display = 'block';
+  dbg.textContent = 'ERR: ' + e.message + ' @' + e.lineno;
+});
+let dbgFrames = 0;
+
+const heatEl = document.getElementById('heat'), gooEl = document.getElementById('goo'),
+      blobsEl = document.getElementById('blobs');
+heatEl.value = S.heat; gooEl.value = S.goo; blobsEl.value = S.blobs;
+heatEl.addEventListener('input', e => { S.heat = +e.target.value; });
+gooEl.addEventListener('input', e => { S.goo = +e.target.value; });
+blobsEl.addEventListener('input', e => { S.blobs = Math.round(+e.target.value); });
+
+const themesEl = document.getElementById('themes');
+THEMES.forEach((th, i) => {
+  const b = document.createElement('button');
+  b.className = 'swatch' + (i === S.theme ? ' active' : '');
+  b.title = th.name;
+  b.style.background = `radial-gradient(circle at 35% 30%, ${th.css[0]}, ${th.css[1]})`;
+  b.addEventListener('click', () => {
+    S.theme = i;
+    themesEl.querySelectorAll('.swatch').forEach((s, j) => s.classList.toggle('active', j === i));
+    applyTheme();
+  });
+  themesEl.appendChild(b);
+});
+
+const moonIcon = document.getElementById('moonIcon');
+const sunIcon = document.getElementById('sunIcon');
+document.getElementById('mode').addEventListener('click', () => {
+  S.light = !S.light;
+  applyTheme();
+});
+
+function applyTheme(){
+  const th = THEMES[S.theme];
+  document.documentElement.classList.toggle('light', S.light);
+  document.documentElement.style.setProperty('--accent', th.css[0]);
+  moonIcon.style.display = S.light ? 'none' : 'block';
+  sunIcon.style.display = S.light ? 'block' : 'none';
+  document.querySelector('meta[name=theme-color]').content = S.light ? '#ffffff' : '#000000';
+}
+applyTheme();
+
+let uiTimer = 0;
+function uiWake(){
+  if (S.uiHidden) return;
+  ui.classList.remove('hidden');
+  clearTimeout(uiTimer);
+  uiTimer = setTimeout(() => ui.classList.add('hidden'), 3500);
+}
+uiWake();
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'h' || e.key === 'H'){
+    S.uiHidden = !S.uiHidden;
+    ui.classList.toggle('hidden', S.uiHidden);
+    if (!S.uiHidden) uiWake();
+  }
+  if (e.key === ' '){ S.paused = !S.paused; e.preventDefault(); }
+  if (e.key === 'd' || e.key === 'D'){
+    S.debug = !S.debug; dbg.style.display = S.debug ? 'block' : 'none';
+  }
+});
+
+/* ---------- render loop with adaptive resolution ---------- */
+
+const blobBuf = new Float32Array(MAXB*4);
+const blobExBuf = new Float32Array(MAXB*4);
+const partBuf = new Float32Array(MAXP*4);
+
+let last = performance.now(), acc = 0, emaMs = 8, frames = 0;
+const STEP = 1/120;
+window.__lava = { fps: 0, scale: 1 };
+
+function frame(now){
+  requestAnimationFrame(frame);
+  let dt = (now - last)/1000;
+  last = now;
+  if (dt > 0.1) dt = 0.1;
+
+  // adaptive internal resolution — keep it silky everywhere
+  emaMs = emaMs*0.95 + (dt*1000)*0.05;
+  if (S.debug && !dbg.textContent.startsWith('ERR')){
+    dbgFrames++;
+    const b = blobs[0];
+    let topNow = -2;
+    for (const q of blobs) if (q.idx < S.blobs) topNow = Math.max(topNow, q.y + q.r);
+    window.__maxTop = Math.max(window.__maxTop ?? -2, topNow);
+    dbg.textContent = `f${dbgFrames} b0=(${b.x.toFixed(2)},${b.y.toFixed(2)}) T=${b.T.toFixed(2)} `
+      + `top=${topNow.toFixed(2)} maxTop=${window.__maxTop.toFixed(2)} t=${simTime.toFixed(0)}s`;
+  }
+  if (++frames % 48 === 0){
+    if (emaMs > 15.5 && resScale > 0.55){ resScale = Math.max(0.55, resScale*0.85); resize(); }
+    else if (emaMs < 9.5 && resScale < 1){ resScale = Math.min(1, resScale*1.1); resize(); }
+    window.__lava.fps = Math.round(1000/emaMs);
+    window.__lava.scale = +resScale.toFixed(2);
+    if (S.debug) dbg.textContent =
+      `${Math.round(1000/emaMs)} fps · render ${(resScale*100)|0}% · ${canvas.width}×${canvas.height}`;
+  }
+
+  const timeScale = 0.25 + Math.pow(S.heat, 1.25)*2.35;
+  if (!S.paused){
+    acc += dt*timeScale;
+    let n = 0;
+    while (acc > STEP && n < 6){ physics(STEP); simTime += STEP; acc -= STEP; n++; }
+    if (n === 6) acc = 0;
+    // mouse velocity decays between events
+    mouse.vx *= Math.exp(-3*dt); mouse.vy *= Math.exp(-3*dt);
+  }
+
+  for (let i=0;i<blobs.length;i++){
+    const b = blobs[i];
+    blobBuf[i*4] = b.x; blobBuf[i*4+1] = b.y; blobBuf[i*4+2] = b.z; blobBuf[i*4+3] = b.r;
+    blobExBuf[i*4] = b.stretch; blobExBuf[i*4+1] = b.T;
+  }
+  for (let i=0;i<parts.length;i++){
+    const q = parts[i];
+    partBuf[i*4] = q.x; partBuf[i*4+1] = q.y; partBuf[i*4+2] = q.z; partBuf[i*4+3] = q.r;
+  }
+
+  const mode = S.light ? THEMES[S.theme].light : THEMES[S.theme].dark;
+
+  // the jam page's circular camera orbit, on the jam page's clock
+  const st = simTime*0.5;
+  camX = Math.sin(st)*0.26;
+  camY = Math.cos(st)*0.16;
+
+  // pass 1: raymarch the scene into a mip-mappable texture
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(progScene);
+  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  gl.uniform1f(U.uTime, simTime);
+  gl.uniform1i(U.uNB, blobs.length);
+  gl.uniform1i(U.uNP, parts.length);
+  gl.uniform4fv(U.uBlob, blobBuf);
+  gl.uniform4fv(U.uBlobEx, blobExBuf);
+  gl.uniform4fv(U.uPart, partBuf);
+  gl.uniform4f(U.uMouse, mouse.x, mouse.y, 0, mouse.r);
+  gl.uniform1f(U.uGoo, 0.05 + S.goo*0.15);
+  gl.uniform1f(U.uMode, S.light ? 1 : 0);
+  gl.uniform1f(U.uExpo, mode.expo);
+  gl.uniform3f(U.uCam, camX, camY, CAMZ);
+  gl.uniform3fv(U.uWaxCold, mode.waxCold);
+  gl.uniform3fv(U.uWaxHot, mode.waxHot);
+  gl.uniform3fv(U.uLiqTop, mode.liqTop);
+  gl.uniform3fv(U.uLiqBot, mode.liqBot);
+  gl.uniform3fv(U.uBulbCol, mode.bulb);
+  gl.uniform3fv(U.uGlowCol, mode.glow);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // pass 1b: the jam page's star particles, drawn only where liquid shows (dark modes)
+  if (!S.light && starSeeded){
+    const dtSim = S.paused ? 0 : Math.min(dt, 0.05)*timeScale;
+    for (let i = 0; i < STAR_N; i++){
+      const i3 = i*3, s = starMeta[i];
+      starPos[i3]   = s.baseX + Math.sin(st + i)*2;   // wave-like motion, as in the original
+      starPos[i3+1] = s.baseY + Math.cos(st + i)*2;
+      starPos[i3+2] += s.velocity * dtSim * 60;       // their per-frame drift, time-corrected
+      if (starPos[i3+2] > 60 || starPos[i3+2] < -250) starPos[i3+2] = -250;
+    }
+    gl.useProgram(progStars);
+    gl.uniformMatrix4fv(US.uVP, false, starVP(Math.sin(st)*10, Math.cos(st)*10, 100));
+    gl.uniform1f(US.uPx, canvas.height*0.5);
+    gl.bindVertexArray(starVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, starPos);
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(gl.ONE_MINUS_DST_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
+    gl.drawArrays(gl.POINTS, 0, STAR_N);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+  }
+
+  // pass 2: bloom + vignette + grain, composited to the screen
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.useProgram(progPost);
+  gl.uniform1i(UP.uTex, 0);
+  gl.uniform2f(UP.uRes, canvas.width, canvas.height);
+  gl.uniform1f(UP.uTime, simTime);
+  gl.uniform1f(UP.uMode, S.light ? 1 : 0);
+  gl.uniform1f(UP.uBloom, S.light ? 0.35 : 0.6);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+requestAnimationFrame(frame);
+
+document.addEventListener('visibilitychange', () => {
+  last = performance.now();      // don't lurch after tab switch
+});
+</script>
 </body>
 </html>
