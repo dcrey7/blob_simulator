@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Breaking Waves — shallow water + overturning sheets</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#08131a}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #ui{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:18px;
+      align-items:center;padding:11px 18px;border-radius:100px;background:rgba(8,18,26,.55);
+      border:1px solid rgba(255,255,255,.10);backdrop-filter:blur(14px);
+      font:600 10px/1 system-ui,sans-serif;letter-spacing:.16em;text-transform:uppercase;
+      color:rgba(226,238,244,.55)}
+  label{display:flex;gap:8px;align-items:center}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:120px;height:18px;background:none;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;background:rgba(226,238,244,.28)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;border-radius:50%;
+      background:#57c8e6;margin-top:-4.5px;box-shadow:0 0 9px rgba(87,200,230,.7)}
+  #hud{position:fixed;top:16px;left:20px;font:500 10px/1.7 ui-monospace,monospace;
+       letter-spacing:.08em;color:rgba(226,238,244,.42);white-space:pre}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud">shallow water + breaking sheets</div>
+<div id="ui">
+  <label>Swell<input id="swell" type="range" min="0" max="1" step="0.01" value="0.6"></label>
+  <label>Period<input id="per" type="range" min="0" max="1" step="0.01" value="0.5"></label>
+</div>
+<script>
+'use strict';
+/* ===========================================================================
+   BREAKING WAVES — an implementation of
+   Thürey, Müller-Fischer, Schirm, Gross,
+   "Real-time Breaking Waves for Shallow Water Simulations" (PG 2007).
+
+   Pipeline, exactly as in the paper:
+     1. a shallow-water solver on a grid (height + velocity, GPU ping-pong)
+     2. detect breaking where the front steepens and outruns the water
+        beneath it (Froude number crossing 1 on a steep face)
+     3. at those cells, generate EXPLICIT OVERTURNING GEOMETRY - a curled
+        sheet thrown forward from the crest, which a height field can
+        never represent
+     4. the sheet's life is tracked per cell and fed back as foam
+
+   Everything is triangles: the water is a displaced grid mesh, the sheets
+   are instanced ribbons bent in the vertex shader. Zero dependencies.
+   =========================================================================== */
+
+const SW = 256, SH = 160;          // simulation grid
+const CW = 128, CH = 80;           // curl instance grid (one candidate per cell)
+const DOMW = 60.0, DOML = 90.0;    // world size of the domain (metres)
+const G = 9.81;
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', {antialias:true, alpha:false});
+if (!gl){ document.body.innerHTML = '<p style="color:#ccc;font:14px system-ui;padding:2rem">Needs WebGL2</p>'; throw 0; }
+const F16 = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float');
+
+function sh(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function prog(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+/* ---------- shared GLSL: bathymetry ---------- */
+const BED = `
+const float DOMW = ${DOMW.toFixed(2)};
+const float DOML = ${DOML.toFixed(2)};
+const float G = ${G.toFixed(4)};
+// the beach: deep offshore (v=0), rising to dry sand at the near edge (v=1)
+float bedAt(vec2 uv){
+  float s = uv.y;
+  float b = mix(-6.0, 0.9, smoothstep(0.05, 1.0, s));
+  b += 0.35*sin(uv.x*9.0)*smoothstep(0.2, 0.9, s);      // a little longshore variation
+  return b;
+}`;
+
+/* =====================  1. SHALLOW WATER SOLVER  ===================== */
+const QUAD_VS = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2));
+  gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+
+const SIM_FS = `#version 300 es
+precision highp float;
+out vec4 outState;
+uniform sampler2D uPrev;
+uniform vec2  uTex;          // 1/resolution
+uniform vec2  uCell;         // cell size in metres
+uniform float uDt, uTime, uSwell, uPeriod, uInit;
+${BED}
+
+// state: x = water depth h, yz = velocity, w = breaking age
+vec4 S(vec2 uv){ return texture(uPrev, clamp(uv, vec2(0.001), vec2(0.999))); }
+float eta(vec2 uv){ vec4 s = S(uv); return s.x + bedAt(uv); }   // surface elevation
+
+void main(){
+  vec2 uv = gl_FragCoord.xy*uTex;
+  if (uInit > 0.5){                       // still water: depth = -bed where wet
+    outState = vec4(max(-bedAt(uv), 0.0), 0.0, 0.0, 0.0);
+    return;
+  }
+  vec4 st = S(uv);
+  float h = st.x;
+  vec2  v = st.yz;
+  float age = st.w;
+  float bed = bedAt(uv);
+
+  vec2 dx = vec2(uTex.x, 0.0), dy = vec2(0.0, uTex.y);
+
+  // --- momentum: advect, then accelerate down the surface gradient ---
+  vec2 back = uv - v*uDt/vec2(DOMW, DOML);
+  vec2 vA = S(back).yz;
+  vec2 grad = vec2(eta(uv+dx) - eta(uv-dx), eta(uv+dy) - eta(uv-dy))/(2.0*uCell);
+  vec2 vN = vA - G*uDt*grad;
+  vN *= 1.0 - 0.35*uDt;                                  // bed friction
+  // shallow water slows and stops the flow on dry sand
+  vN *= smoothstep(0.0, 0.12, h);
+
+  // --- continuity: h loses what flows out of the cell ---
+  vec4 sL = S(uv-dx), sR = S(uv+dx), sD = S(uv-dy), sU = S(uv+dy);
+  float fluxX = (sR.x*sR.y - sL.x*sL.y)/(2.0*uCell.x);
+  float fluxY = (sU.x*sU.z - sD.x*sD.z)/(2.0*uCell.y);
+  float hN = h - uDt*(fluxX + fluxY);
+  hN = max(hN, 0.0);
+
+  // --- the swell enters at the offshore boundary ---
+  if (uv.y < 0.035){
+    float T = mix(9.0, 4.0, uPeriod);                    // wave period, seconds
+    float amp = 0.25 + 2.2*uSwell;
+    float surf = amp*sin(6.2831853*uTime/T)
+               + 0.35*amp*sin(6.2831853*uTime/(T*0.61) + 1.7 + uv.x*3.0);
+    hN = mix(hN, max(-bed + surf, 0.05), 0.55);
+    vN = mix(vN, vec2(0.0, sqrt(G*max(-bed, 0.5))*0.06), 0.5);
+  }
+  // absorb at the sides
+  if (uv.x < 0.02 || uv.x > 0.98) vN.x *= 0.2;
+
+  // --- 2. BREAKING DETECTION (the paper's criterion) ---------------------
+  // a wave breaks where the front is steep AND the water is moving as fast
+  // as the wave itself: Froude = |v| / sqrt(g h) reaching 1 on a steep face
+  float froude = length(vN)/sqrt(G*max(hN, 0.05));
+  float slope  = length(grad);
+  float onshore = clamp(vN.y*3.0, 0.0, 1.0);             // only fronts running ashore
+  float breaking = smoothstep(0.55, 0.95, froude)*smoothstep(0.16, 0.55, slope)*onshore;
+  breaking *= smoothstep(0.05, 0.4, hN)*smoothstep(4.5, 1.6, hN);   // only in the shallows
+
+  // the sheet's life: grows while breaking, then decays (drives geometry + foam)
+  float ageN = max(age*exp(-uDt*0.55), 0.0);
+  ageN = max(ageN, breaking);
+  if (age > 0.02) ageN = min(age + uDt*0.55, 1.6);       // once thrown, it keeps going
+
+  // hard guards: an unstable cell must never poison the whole field
+  hN = clamp(hN, 0.0, 40.0);
+  vN = clamp(vN, vec2(-14.0), vec2(14.0));
+  if (!(hN == hN)) hN = max(-bed, 0.0);
+  if (!(vN.x == vN.x) || !(vN.y == vN.y)) vN = vec2(0.0);
+  if (!(ageN == ageN)) ageN = 0.0;
+  outState = vec4(hN, vN, clamp(ageN, 0.0, 1.6));
+}`;
+
+/* =====================  WATER SURFACE MESH  ===================== */
+const WATER_VS = `#version 300 es
+layout(location=0) in vec2 aG;      // grid coords 0..1
+uniform sampler2D uState;
+uniform mat4 uVP;
+uniform vec2 uTex;
+out vec3 vP; out float vH; out float vAge; out vec3 vN;
+${BED}
+float hAt(vec2 uv){ return texture(uState, uv).x; }
+float etaAt(vec2 uv){ return hAt(uv) + bedAt(uv); }
+void main(){
+  vec4 st = texture(uState, aG);
+  float e = st.x + bedAt(aG);
+  vec3 wp = vec3((aG.x - 0.5)*DOMW, e, -aG.y*DOML);
+  // normal from the surface gradient
+  vec2 dx = vec2(uTex.x, 0.0), dy = vec2(0.0, uTex.y);
+  float ex = etaAt(aG+dx) - etaAt(aG-dx);
+  float ey = etaAt(aG+dy) - etaAt(aG-dy);
+  vN = normalize(vec3(-ex*DOML*uTex.y, 2.0*DOMW*uTex.x*DOML*uTex.y*8.0, ey*DOMW*uTex.x));
+  vN = normalize(vec3(-ex/(2.0*DOMW*uTex.x), 1.0, ey/(2.0*DOML*uTex.y)));
+  vP = wp; vH = st.x; vAge = st.w;
+  gl_Position = uVP*vec4(wp, 1.0);
+}`;
+
+const WATER_FS = `#version 300 es
+precision highp float;
+in vec3 vP; in float vH; in float vAge; in vec3 vN;
+out vec4 o;
+uniform vec3 uEye;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float noise2(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),u.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y); }
+void main(){
+  vec3 n = normalize(vN);
+  vec3 vd = normalize(uEye - vP);
+  vec3 sun = normalize(vec3(0.3, 0.55, 0.78));
+  float fres = pow(1.0 - max(dot(n, vd), 0.0), 4.0);
+
+  vec3 deep = vec3(0.012, 0.075, 0.105);
+  vec3 shal = vec3(0.09, 0.26, 0.28);
+  vec3 col = mix(shal, deep, smoothstep(0.4, 4.0, vH));
+  vec3 skyc = mix(vec3(0.55,0.68,0.78), vec3(0.16,0.34,0.58), 0.5);
+  col += skyc*(0.06 + 0.38*fres);
+  col += vec3(1.5,1.4,1.2)*pow(max(dot(reflect(-vd, n), sun), 0.0), 90.0)*0.5;
+
+  // foam: whitewater left by breaking, and the thin edge on the sand
+  float tex = noise2(vP.xz*2.6) * 0.6 + noise2(vP.xz*7.0)*0.4;
+  float foam = smoothstep(0.15, 0.75, vAge)*smoothstep(0.25, 0.8, tex)
+             + smoothstep(0.30, 0.06, vH)*0.55*smoothstep(0.3, 0.85, tex);
+  col = mix(col, vec3(0.92,0.95,0.96), clamp(foam, 0.0, 0.94));
+
+  // dry sand shows through where there is no water
+  if (vH < 0.02) col = mix(vec3(0.72,0.66,0.55), col, smoothstep(0.0, 0.02, vH));
+
+  col = col*(2.51*col+0.03)/(col*(2.43*col+0.59)+0.14);
+  o = vec4(pow(clamp(col,0.0,1.0), vec3(1.0/2.2)), 1.0);
+}`;
+
+/* ============  3. OVERTURNING SHEETS (instanced ribbons)  ============ */
+const CURL_VS = `#version 300 es
+layout(location=0) in vec2 aRib;    // s along the curl 0..1, t across 0..1
+uniform sampler2D uState;
+uniform mat4 uVP;
+uniform vec2 uTex;
+out float vS, vT, vAge;
+out vec3 vP, vN;
+${BED}
+void main(){
+  int id = gl_InstanceID;
+  ivec2 cell = ivec2(id % ${CW}, id / ${CW});
+  vec2 uv = (vec2(cell) + 0.5)/vec2(${CW}.0, ${CH}.0);
+  vec4 st = texture(uState, uv);
+  float age = st.w;
+  // no sheet here: collapse the instance out of clip space
+  if (age < 0.12 || st.x < 0.05){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
+
+  float h = st.x;
+  vec2 flow = st.yz;
+  float sp = max(length(flow), 0.001);
+  vec2 dir = flow/sp;                                   // the front's travel direction
+  vec3 fwd = normalize(vec3(dir.x, 0.0, -dir.y));
+  vec3 side = normalize(cross(vec3(0,1,0), fwd));
+
+  vec3 crest = vec3((uv.x - 0.5)*DOMW, st.x + bedAt(uv), -uv.y*DOML);
+
+  // the curl: a sheet thrown from the crest, rotating forward as it ages.
+  // age 0 -> just leaving the crest;  age 1+ -> plunged onto the water ahead
+  float q = clamp(age/1.2, 0.0, 1.0);
+  float H = clamp(h*0.55 + 0.25, 0.2, 2.2);
+  float R = H*(0.42 + 0.20*q);
+  float a0 = 2.0, a1 = a0 - (0.25 + 3.3*smoothstep(0.05, 0.75, q));
+  float a = mix(a0, a1, aRib.x);
+  vec3 centre = crest + vec3(0.0, H*0.72, 0.0) + fwd*R*0.30;
+  vec3 pos = centre + fwd*(R*cos(a)) + vec3(0.0, R*sin(a), 0.0);
+  // width along the crest, and a torn, vertically-strung trailing edge
+  float wob = sin(float(cell.x)*1.7) * 0.25;
+  float width = (DOMW/float(${CW}))*1.9;
+  pos += side*((aRib.y - 0.5)*width*(1.0 + wob*0.3));
+  // the sheet thins and tears toward its tip
+  pos.y -= aRib.x*aRib.x*0.10*H;
+
+  vec3 tangent = fwd*(-sin(a)) + vec3(0.0, cos(a), 0.0);
+  vN = normalize(cross(side, tangent));
+  vP = pos; vS = aRib.x; vT = aRib.y; vAge = age;
+  gl_Position = uVP*vec4(pos, 1.0);
+}`;
+
+const CURL_FS = `#version 300 es
+precision highp float;
+in float vS, vT, vAge;
+in vec3 vP, vN;
+out vec4 o;
+uniform vec3 uEye;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float noise2(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),u.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y); }
+void main(){
+  if (vAge < 0.01) discard;
+  // the thrown sheet tears into VERTICAL strands as it falls
+  float strand = noise2(vec2(vT*22.0, vP.y*1.6 - vS*3.0));
+  float tear = smoothstep(0.62, 0.18, vS)*0.6 + 0.4;      // more solid near the crest
+  if (strand > tear + 0.34) discard;                      // holes torn through it
+
+  vec3 n = normalize(vN);
+  vec3 vd = normalize(uEye - vP);
+  vec3 sun = normalize(vec3(0.3, 0.55, 0.78));
+  float fres = pow(1.0 - abs(dot(n, vd)), 3.0);
+  float thru = pow(clamp(dot(-n, sun)*0.5 + 0.5, 0.0, 1.0), 2.0);
+
+  vec3 col = mix(vec3(0.05,0.20,0.22), vec3(0.13,0.42,0.42), vS);
+  col += vec3(0.20,0.62,0.55)*thru*0.9;                   // light through the thin sheet
+  col += vec3(0.55,0.72,0.80)*fres*0.55;
+  // its outer face and tip are torn to foam
+  float foam = smoothstep(0.25, 0.9, vS)*smoothstep(0.3, 0.8, strand) + fres*0.3;
+  col = mix(col, vec3(0.93,0.96,0.97), clamp(foam, 0.0, 0.9));
+
+  col = col*(2.51*col+0.03)/(col*(2.43*col+0.59)+0.14);
+  o = vec4(pow(clamp(col,0.0,1.0), vec3(1.0/2.2)), 1.0);
+}`;
+
+/* ---------------- GL objects ---------------- */
+const pSim = prog(QUAD_VS, SIM_FS);
+const pWater = prog(WATER_VS, WATER_FS);
+const pCurl = prog(CURL_VS, CURL_FS);
+const U = (p, n) => gl.getUniformLocation(p, n);
+
+// ping-pong state textures
+const type = gl.getExtension('EXT_color_buffer_float') ? gl.FLOAT : gl.HALF_FLOAT;
+const iform = type === gl.FLOAT ? gl.RGBA32F : gl.RGBA16F;
+let tex = [], fbo = [];
+for (let i = 0; i < 2; i++){
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, iform, SW, SH, 0, gl.RGBA, type, null);
+  for (const [k,v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR],[gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+                       [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+    gl.texParameteri(gl.TEXTURE_2D, k, v);
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
+  tex.push(t); fbo.push(f);
+}
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+let cur = 0;
+
+// prime both state textures with still water, or the solver has nothing to move
+gl.useProgram(pSim);
+gl.uniform2f(U(pSim,'uTex'), 1/SW, 1/SH);
+gl.uniform2f(U(pSim,'uCell'), DOMW/SW, DOML/SH);
+gl.uniform1f(U(pSim,'uInit'), 1.0);
+gl.uniform1f(U(pSim,'uDt'), 0.0);
+gl.uniform1f(U(pSim,'uTime'), 0.0);
+gl.uniform1f(U(pSim,'uSwell'), 0.0);
+gl.uniform1f(U(pSim,'uPeriod'), 0.5);
+for (let i = 0; i < 2; i++){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[i]);
+  gl.viewport(0, 0, SW, SH);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+// water grid mesh
+const GX = 220, GY = 150;
+{
+  const verts = new Float32Array(GX*GY*2);
+  let k = 0;
+  for (let j = 0; j < GY; j++) for (let i = 0; i < GX; i++){
+    verts[k++] = i/(GX-1); verts[k++] = j/(GY-1);
+  }
+  var waterVAO = gl.createVertexArray();
+  gl.bindVertexArray(waterVAO);
+  const vb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const idx = new Uint32Array((GX-1)*(GY-1)*6);
+  let m = 0;
+  for (let j = 0; j < GY-1; j++) for (let i = 0; i < GX-1; i++){
+    const a = j*GX+i, b = a+1, c = a+GX, d = c+1;
+    idx[m++]=a; idx[m++]=c; idx[m++]=b; idx[m++]=b; idx[m++]=c; idx[m++]=d;
+  }
+  const ib = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  var waterCount = idx.length;
+  gl.bindVertexArray(null);
+}
+
+// curl ribbon: SEG segments along the arc, 2 across
+const SEG = 10;
+{
+  const rib = new Float32Array((SEG+1)*2*2);
+  let k = 0;
+  for (let i = 0; i <= SEG; i++){ const s = i/SEG;
+    rib[k++]=s; rib[k++]=0; rib[k++]=s; rib[k++]=1; }
+  var curlVAO = gl.createVertexArray();
+  gl.bindVertexArray(curlVAO);
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, rib, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  var curlVerts = (SEG+1)*2;
+}
+
+/* ---------------- camera ---------------- */
+let W=1, H=1;
+function resize(){
+  if (!innerWidth) return;
+  W = innerWidth; H = innerHeight;
+  const d = Math.min(devicePixelRatio||1, 2);
+  canvas.width = Math.round(W*d); canvas.height = Math.round(H*d);
+  gl.viewport(0,0,canvas.width,canvas.height);
+}
+addEventListener('resize', resize); resize();
+
+const VP = new Float32Array(16);
+const eye = [0, 9.5, 14.0];
+function buildVP(){
+  const target = [0, 0, -34];
+  let fx = target[0]-eye[0], fy = target[1]-eye[1], fz = target[2]-eye[2];
+  const fl = Math.hypot(fx,fy,fz); fx/=fl; fy/=fl; fz/=fl;
+  let rx = fz, ry = 0, rz = -fx;
+  const rl = Math.hypot(rx,rz); rx/=rl; rz/=rl;
+  const ux = ry*fz-rz*fy, uy = rz*fx-rx*fz, uz = rx*fy-ry*fx;
+  const tx = -(rx*eye[0]+ry*eye[1]+rz*eye[2]);
+  const ty = -(ux*eye[0]+uy*eye[1]+uz*eye[2]);
+  const tz = -(fx*eye[0]+fy*eye[1]+fz*eye[2]);
+  const f = 1.5, asp = W/H, near = 0.1, far = 400;
+  const A = (far+near)/(near-far), B = 2*far*near/(near-far), fa = f/asp;
+  VP[0]=fa*rx; VP[1]=f*ux; VP[2]=A*fx;    VP[3]=fx;
+  VP[4]=fa*ry; VP[5]=f*uy; VP[6]=A*fy;    VP[7]=fy;
+  VP[8]=fa*rz; VP[9]=f*uz; VP[10]=A*fz;   VP[11]=fz;
+  VP[12]=fa*tx;VP[13]=f*ty;VP[14]=A*tz+B; VP[15]=tz;
+  return VP;
+}
+
+/* ---------------- loop ---------------- */
+const swellEl = document.getElementById('swell'), perEl = document.getElementById('per');
+const hud = document.getElementById('hud');
+let simT = 0, last = performance.now(), ema = 16, frames = 0;
+
+function frame(now){
+  requestAnimationFrame(frame);
+  let dt = (now-last)/1000; last = now; if (dt > 0.05) dt = 0.05;
+  ema = ema*0.94 + dt*1000*0.06;
+  simT += dt;
+
+  // ---- 1. step the shallow water solver (a few substeps for stability) ----
+  gl.disable(gl.DEPTH_TEST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const SUB = 3, sdt = Math.min(dt, 1/60)/SUB;
+  gl.useProgram(pSim);
+  gl.uniform2f(U(pSim,'uTex'), 1/SW, 1/SH);
+  gl.uniform2f(U(pSim,'uCell'), DOMW/SW, DOML/SH);
+  gl.uniform1f(U(pSim,'uSwell'), +swellEl.value);
+  gl.uniform1f(U(pSim,'uPeriod'), +perEl.value);
+  gl.uniform1f(U(pSim,'uInit'), 0.0);
+  for (let s = 0; s < SUB; s++){
+    const nxt = 1-cur;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[nxt]);
+    gl.viewport(0,0,SW,SH);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
+    gl.uniform1i(U(pSim,'uPrev'), 0);
+    gl.uniform1f(U(pSim,'uDt'), sdt);
+    gl.uniform1f(U(pSim,'uTime'), simT + s*sdt);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    cur = nxt;
+  }
+
+  // ---- render ----
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0.42, 0.55, 0.66, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  const vp = buildVP();
+
+  gl.useProgram(pWater);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
+  gl.uniform1i(U(pWater,'uState'), 0);
+  gl.uniformMatrix4fv(U(pWater,'uVP'), false, vp);
+  gl.uniform2f(U(pWater,'uTex'), 1/SW, 1/SH);
+  gl.uniform3f(U(pWater,'uEye'), eye[0], eye[1], eye[2]);
+  gl.bindVertexArray(waterVAO);
+  gl.drawElements(gl.TRIANGLES, waterCount, gl.UNSIGNED_INT, 0);
+
+  // ---- 3. the overturning sheets ----
+  gl.useProgram(pCurl);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
+  gl.uniform1i(U(pCurl,'uState'), 0);
+  gl.uniformMatrix4fv(U(pCurl,'uVP'), false, vp);
+  gl.uniform2f(U(pCurl,'uTex'), 1/SW, 1/SH);
+  gl.uniform3f(U(pCurl,'uEye'), eye[0], eye[1], eye[2]);
+  gl.bindVertexArray(curlVAO);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, curlVerts, CW*CH);
+  gl.bindVertexArray(null);
+
+  if (++frames % 30 === 0)
+    hud.textContent = `shallow water ${SW}x${SH} · sheets ${CW*CH} · ${Math.round(1000/ema)} fps`;
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
