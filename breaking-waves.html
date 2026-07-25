@@ -58,6 +58,7 @@ const canvas = document.getElementById('gl');
 const gl = canvas.getContext('webgl2', {antialias:true, alpha:false});
 if (!gl){ document.body.innerHTML = '<p style="color:#ccc;font:14px system-ui;padding:2rem">Needs WebGL2</p>'; throw 0; }
 const F16 = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float');
+gl.getExtension('OES_texture_float_linear');
 
 function sh(type, src){
   const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
@@ -123,7 +124,7 @@ void main(){
   vec2 vA = S(back).yz;
   vec2 grad = vec2(eta(uv+dx) - eta(uv-dx), eta(uv+dy) - eta(uv-dy))/(2.0*uCell);
   vec2 vN = vA - G*uDt*grad;
-  vN *= 1.0 - 0.35*uDt;                                  // bed friction
+  vN *= 1.0 - 0.55*uDt;                                   // bed friction
   // shallow water slows and stops the flow on dry sand
   vN *= smoothstep(0.0, 0.12, h);
 
@@ -133,14 +134,15 @@ void main(){
   float fluxY = (sU.x*sU.z - sD.x*sD.z)/(2.0*uCell.y);
   float hN = h - uDt*(fluxX + fluxY);
   hN = max(hN, 0.0);
+  hN = mix(hN, max(-bed, 0.0), 0.02*(1.0 - smoothstep(0.0, 0.55, uv.y)));  // gentle offshore relax
 
   // --- the swell enters at the offshore boundary ---
   if (uv.y < 0.035){
     float T = mix(9.0, 4.0, uPeriod);                    // wave period, seconds
-    float amp = 0.25 + 2.2*uSwell;
+    float amp = 0.30 + 2.0*uSwell;
     float surf = amp*sin(6.2831853*uTime/T)
                + 0.35*amp*sin(6.2831853*uTime/(T*0.61) + 1.7 + uv.x*3.0);
-    hN = mix(hN, max(-bed + surf, 0.05), 0.55);
+    hN = mix(hN, max(-bed + surf, 0.05), 0.45);
     vN = mix(vN, vec2(0.0, sqrt(G*max(-bed, 0.5))*0.06), 0.5);
   }
   // absorb at the sides
@@ -151,18 +153,19 @@ void main(){
   // as the wave itself: Froude = |v| / sqrt(g h) reaching 1 on a steep face
   float froude = length(vN)/sqrt(G*max(hN, 0.05));
   float slope  = length(grad);
-  float onshore = clamp(vN.y*3.0, 0.0, 1.0);             // only fronts running ashore
-  float breaking = smoothstep(0.55, 0.95, froude)*smoothstep(0.16, 0.55, slope)*onshore;
-  breaking *= smoothstep(0.05, 0.4, hN)*smoothstep(4.5, 1.6, hN);   // only in the shallows
+  float onshore = clamp(vN.y*6.0, 0.0, 1.0);             // only fronts running ashore
+  float breaking = smoothstep(0.30, 0.70, froude)*smoothstep(0.08, 0.30, slope)*onshore;
+  breaking *= smoothstep(0.05, 0.35, hN)*smoothstep(5.5, 2.0, hN);   // only in the shallows
 
-  // the sheet's life: grows while breaking, then decays (drives geometry + foam)
-  float ageN = max(age*exp(-uDt*0.55), 0.0);
-  ageN = max(ageN, breaking);
-  if (age > 0.02) ageN = min(age + uDt*0.55, 1.6);       // once thrown, it keeps going
+  // the sheet's life: a TRANSIENT - it is thrown, it flies, it dies
+  float ageN;
+  if (breaking > 0.30) ageN = max(age, 0.14) + uDt*1.15;   // being thrown right now
+  else                 ageN = age - uDt*1.05;              // spent: fall back and fade
+  ageN = clamp(ageN, 0.0, 1.35);
 
   // hard guards: an unstable cell must never poison the whole field
-  hN = clamp(hN, 0.0, 40.0);
-  vN = clamp(vN, vec2(-14.0), vec2(14.0));
+  hN = clamp(hN, 0.0, 12.0);
+  vN = clamp(vN, vec2(-7.0), vec2(7.0));
   if (!(hN == hN)) hN = max(-bed, 0.0);
   if (!(vN.x == vN.x) || !(vN.y == vN.y)) vN = vec2(0.0);
   if (!(ageN == ageN)) ageN = 0.0;
@@ -323,7 +326,9 @@ for (let i = 0; i < 2; i++){
   const t = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, t);
   gl.texImage2D(gl.TEXTURE_2D, 0, iform, SW, SH, 0, gl.RGBA, type, null);
-  for (const [k,v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR],[gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+  // NEAREST: float textures are not filterable without OES_texture_float_linear,
+  // and an unfilterable+LINEAR texture samples as ZERO - which silently kills the sim
+  for (const [k,v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST],[gl.TEXTURE_MAG_FILTER, gl.NEAREST],
                        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
     gl.texParameteri(gl.TEXTURE_2D, k, v);
   const f = gl.createFramebuffer();
@@ -421,7 +426,9 @@ function buildVP(){
   const ty = -(ux*eye[0]+uy*eye[1]+uz*eye[2]);
   const tz = -(fx*eye[0]+fy*eye[1]+fz*eye[2]);
   const f = 1.5, asp = W/H, near = 0.1, far = 400;
-  const A = (far+near)/(near-far), B = 2*far*near/(near-far), fa = f/asp;
+  // NB: with forward mapped to +w, depth must be A=(f+n)/(f-n), B=-2fn/(f-n).
+  // The negated form puts every vertex just outside the near plane -> all clipped.
+  const A = (far+near)/(far-near), B = -2*far*near/(far-near), fa = f/asp;
   VP[0]=fa*rx; VP[1]=f*ux; VP[2]=A*fx;    VP[3]=fx;
   VP[4]=fa*ry; VP[5]=f*uy; VP[6]=A*fy;    VP[7]=fy;
   VP[8]=fa*rz; VP[9]=f*uz; VP[10]=A*fz;   VP[11]=fz;
