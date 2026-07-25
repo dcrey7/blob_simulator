@@ -172,10 +172,10 @@ void main(){
   // thresholds set from MEASURED values in this sim, not textbook ones: a
   // shallow-water wave of height eta in depth h has Fr ~ eta/h * something
   // well under 1 except in the last metre, and surface slopes here run 0.005-0.04
-  float breaking = smoothstep(0.15, 0.31, froude)*smoothstep(0.012, 0.034, slope)*onshore;
+  float breaking = smoothstep(0.13, 0.28, froude)*smoothstep(0.009, 0.028, slope)*onshore;
   // a narrow depth band: waves break along ONE line where depth ~ wave height,
   // not across the whole shallow field (that produced rows of parallel curls)
-  breaking *= smoothstep(0.25, 0.55, hN)*smoothstep(1.7, 1.0, hN);
+  breaking *= smoothstep(0.18, 0.42, hN)*smoothstep(2.4, 1.1, hN);
 
   // the sheet's life: a TRANSIENT - it is thrown, it flies, it dies
   float ageN;
@@ -266,36 +266,42 @@ ${BED}
 void main(){
   int id = gl_InstanceID;
   ivec2 cell = ivec2(id % ${CW}, id / ${CW});
-  vec2 uv = (vec2(cell) + 0.5)/vec2(${CW}.0, ${CH}.0);
-  vec4 st = texture(uState, uv);
+
+  // A ribbon spans from THIS cell to the NEXT one along the crest, and every
+  // quantity is interpolated across that span. Neighbouring ribbons therefore
+  // share identical edges and weld into ONE continuous lip, instead of each
+  // cell throwing its own disconnected tile.
+  vec2 uvA = (vec2(cell) + vec2(0.5, 0.5))/vec2(${CW}.0, ${CH}.0);
+  vec2 uvB = (vec2(cell) + vec2(1.5, 0.5))/vec2(${CW}.0, ${CH}.0);
+  vec4 stA = texture(uState, uvA);
+  vec4 stB = texture(uState, uvB);
+  float t = aRib.y;                       // 0..1 across the ribbon's width
+  vec4 st = mix(stA, stB, t);
+  float uvx = mix(uvA.x, uvB.x, t);
+  float uvy = uvA.y;
+
   float age = st.w;
-  // no sheet here: collapse the instance out of clip space
-  if (age < 0.58 || st.x < 0.10){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
+  float grow = smoothstep(0.20, 0.48, age);          // fade in, no hard popping
+  if (grow < 0.02 || st.x < 0.10){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
 
   float h = st.x;
   vec2 flow = st.yz;
   float sp = max(length(flow), 0.001);
-  vec2 dir = flow/sp;                                   // the front's travel direction
+  vec2 dir = flow/sp;
   vec3 fwd = normalize(vec3(dir.x, 0.0, -dir.y));
   vec3 side = normalize(cross(vec3(0,1,0), fwd));
 
-  vec3 crest = vec3((uv.x - 0.5)*DOMW, st.x + bedAt(uv), -uv.y*DOML);
+  // the crest sits exactly on the interpolated water surface
+  vec3 crest = vec3((uvx - 0.5)*DOMW, st.x + bedAt(vec2(uvx, uvy)), -uvy*DOML);
 
-  // the curl: a sheet thrown from the crest, rotating forward as it ages.
-  // age 0 -> just leaving the crest;  age 1+ -> plunged onto the water ahead
   float q = clamp(age/1.2, 0.0, 1.0);
-  float H = clamp(h*0.30 + 0.14, 0.14, 0.85);  // a lip is a good fraction of wave height
-  float R = H*(0.60 + 0.28*q);   // curl radius must dominate the ribbon width
+  float H = clamp(h*0.30 + 0.14, 0.14, 0.85)*grow;
+  float R = H*(0.60 + 0.28*q);
   float a0 = 2.0, a1 = a0 - (0.25 + 3.3*smoothstep(0.05, 0.75, q));
   float a = mix(a0, a1, aRib.x);
   vec3 centre = crest + vec3(0.0, H*0.72, 0.0) + fwd*R*0.30;
   vec3 pos = centre + fwd*(R*cos(a)) + vec3(0.0, R*sin(a), 0.0);
-  // width along the crest, and a torn, vertically-strung trailing edge
-  float wob = sin(float(cell.x)*1.7) * 0.25;
-  float width = (DOMW/float(${CW}))*1.05;
-  pos += side*((aRib.y - 0.5)*width*(1.0 + wob*0.3));
-  // the sheet thins and tears toward its tip
-  pos.y -= aRib.x*aRib.x*0.10*H;
+  pos.y -= aRib.x*aRib.x*0.10*H;                     // thins toward the tip
 
   vec3 tangent = fwd*(-sin(a)) + vec3(0.0, cos(a), 0.0);
   vN = normalize(cross(side, tangent));
