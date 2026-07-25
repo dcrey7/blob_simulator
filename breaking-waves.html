@@ -172,12 +172,14 @@ void main(){
   // thresholds set from MEASURED values in this sim, not textbook ones: a
   // shallow-water wave of height eta in depth h has Fr ~ eta/h * something
   // well under 1 except in the last metre, and surface slopes here run 0.005-0.04
-  float breaking = smoothstep(0.17, 0.34, froude)*smoothstep(0.016, 0.040, slope)*onshore;
-  breaking *= smoothstep(0.05, 0.35, hN)*smoothstep(5.5, 2.0, hN);   // only in the shallows
+  float breaking = smoothstep(0.15, 0.31, froude)*smoothstep(0.012, 0.034, slope)*onshore;
+  // a narrow depth band: waves break along ONE line where depth ~ wave height,
+  // not across the whole shallow field (that produced rows of parallel curls)
+  breaking *= smoothstep(0.25, 0.55, hN)*smoothstep(1.7, 1.0, hN);
 
   // the sheet's life: a TRANSIENT - it is thrown, it flies, it dies
   float ageN;
-  if (breaking > 0.13) ageN = max(age, 0.16) + uDt*1.15;   // being thrown right now
+  if (breaking > 0.10) ageN = max(age, 0.16) + uDt*1.15;   // being thrown right now
   else                 ageN = age - uDt*1.05;              // spent: fall back and fade
   ageN = clamp(ageN, 0.0, 1.35);
 
@@ -268,7 +270,7 @@ void main(){
   vec4 st = texture(uState, uv);
   float age = st.w;
   // no sheet here: collapse the instance out of clip space
-  if (age < 0.85 || st.x < 0.10){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
+  if (age < 0.58 || st.x < 0.10){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
 
   float h = st.x;
   vec2 flow = st.yz;
