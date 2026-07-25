@@ -299,7 +299,12 @@ float waveH(vec2 xz, out float crest, out float carry){
   float collapse = smoothstep(0.0, 0.85, prog);               // ~0.7s of violent transform
   float burst = exp(-pow((prog - 0.4)/0.65, 2.0));
 
-  p1 += 1.15 * preC * crashStr * prox * cos(p1);              // the top overtakes the bottom
+  // Gerstner choppiness (the AAA ocean law): every crest leans shoreward; a
+  // crashing wave's skew crosses the fold limit and the surface breaks over itself
+  float Q = 0.45 + 0.50*uWaves*sh + 1.30*preC*crashStr*prox;
+  p1 += Q*cos(p1);
+  float jac = 1.0 - Q*sin(p1);                 // Jacobian <= 0 → folding → whitewater
+  float fold = smoothstep(0.25, -0.40, jac);
 
   // Stokes-like profile: tall sharp crests, shallow flat troughs —
   // the trough never digs down to expose the seabed
@@ -314,7 +319,7 @@ float waveH(vec2 xz, out float crest, out float carry){
   h += amp * lip * crashStr * prox * 0.8;
   // the explosion itself: a mound of thrown whitewater at the moment of collapse
   h += amp * burst * prox * crashStr * 0.4;
-  float churn = (preC*0.4 + burst) * prox * crashStr;
+  float churn = (preC*0.4 + burst) * prox * crashStr + fold*0.5;
 
   // fluid detail: two Seascape octaves, churned violent where a wave is crashing
   float farFade = smoothstep(50.0, 12.0, dist);
@@ -326,7 +331,8 @@ float waveH(vec2 xz, out float crest, out float carry){
   h += seaOctave((duv - t1)*1.9, 2.2) * dAmp*0.35;
 
   crest = pow(max(0.0, sin(p1))*0.75 + max(0.0, sin(p2))*0.25, 3.0);
-  crest = min(crest + (lip*1.2 + burst*2.8)*prox*crashStr, 2.2);  // the crash whites out
+  // folding surface + burst white out the crest — foam lives where physics says
+  crest = min(crest + (lip*1.2 + burst*2.8)*prox*crashStr + fold*2.4, 2.4);
 
   // after breaking, the whitewater keeps rolling in — crashed waves carry the most
   float rolling = pow(max(0.0, sin(p1 - 0.8)), 2.0) * (0.30 + 1.1*crashStr);
@@ -514,6 +520,8 @@ void main(){
       float breakH = 0.78 * max(depth, 0.05);                   // breaking criterion H≈0.78d
       float over = smoothstep(breakH*0.55, breakH*1.05, max(wat, 0.0));
       float foamTex = fbm(p.xz*vec2(0.9, 3.2) + vec2(0.0, uTime*1.1));   // streaks along the crest
+      float crashNow = clamp(crest - 1.0, 0.0, 1.4);            // a fold is happening HERE
+      water *= 1.0 - 0.16*min(crashNow, 1.0);                   // shadowed face under the lip
       float bore  = over * crest * smoothstep(2.2, 0.7, depth); // spilling whitewater
       bore = max(bore, carry * smoothstep(1.0, 0.12, depth));   // ...rolling on to the sand
       // waves break in sections along the crest, never as one solid rope
@@ -521,7 +529,7 @@ void main(){
       bore *= 0.25 + 0.75*sect;
       float rim   = smoothstep(0.10, 0.015, depth);             // swash leading edge
       float caps  = over * smoothstep(24.0, 40.0, dist) * 0.5;  // offshore whitecaps
-      float foam  = clamp(bore*1.6 + rim*1.0 + caps, 0.0, 1.0);
+      float foam  = clamp(bore*1.6 + rim*1.0 + caps + crashNow*0.85, 0.0, 1.0);
       foam *= smoothstep(3.2, 4.6, dist);                     // no foam up the dry beach
       foam *= 0.72 + 0.28*foamTex;                            // large-scale variety, stays white
       // fine bubble grain lives in the COLOR — white on white, never gray holes
@@ -531,7 +539,8 @@ void main(){
       water = mix(water, foamCol*mix(1.0, 1.22, bore), min(foam, 1.0));
       // spray flung off the breaking crests, harder in big surf
       float sprayN = noise2(p.xz*16.0 + vec2(uTime*2.5, -uTime*4.5));
-      water += P_foam() * smoothstep(0.70, 0.90, sprayN) * bore * crest * (1.4 + uWaves*1.4);
+      water += P_foam() * smoothstep(0.70, 0.90, sprayN)
+             * (bore * crest + crashNow*0.7) * (1.4 + uWaves*1.4);
       // lace left on the film as it retreats
       float lace = smoothstep(0.60, 0.85, fbm(p.xz*vec2(2.4, 3.8) - vec2(0.0, uTime*0.3)))
                  * smoothstep(0.5, 0.08, depth) * 0.40 * smoothstep(3.8, 5.6, dist);
