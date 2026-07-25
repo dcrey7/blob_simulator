@@ -147,7 +147,7 @@ uniform vec2  uCam;
 uniform vec4  uRip[MAXRIP];
 
 const float CAMH   = 3.4;     // standing on the dune
-const float SHORE  = 9.0;     // where the beach bed crosses still-water level
+const float SHORE  = 6.0;     // where the beach bed crosses still-water level
 const float BEDSLOPE = 0.052; // gentle sandy slope → spilling breakers
 const mat2  OCT = mat2(1.6, 1.2, -1.2, 1.6);   // Seascape octave rotation
 
@@ -270,10 +270,10 @@ float swashLift(float lat){
    "carry" is the broken crest rolling on as a whitewater bore to the shore. */
 float waveH(vec2 xz, out float crest, out float carry){
   float dist = -xz.y;
-  float sh   = smoothstep(45.0, 14.0, dist);
+  float sh   = smoothstep(45.0, 12.0, dist);
   float kmul = mix(1.0, 1.9, sh);
   // surf peaks mid-field, between the horizon and the sand, then collapses to swash
-  float amp  = (0.20 + uWaves*0.72) * mix(0.45, 1.65, sh) * smoothstep(5.5, 12.0, dist);
+  float amp  = (0.20 + uWaves*0.72) * mix(0.45, 1.65, sh) * smoothstep(3.5, 9.0, dist);
   // sets and lulls: deep beat + spatial breakup so rows never read as corduroy
   float setBeat = 0.5 + 0.5*sin(uTime*0.085 + dist*0.012);
   float setNoise = noise2(vec2(dist*0.04 + uTime*0.02, xz.x*0.015));
@@ -283,14 +283,30 @@ float waveH(vec2 xz, out float crest, out float carry){
   float p1 = (0.10*xz.x + dist) * 0.24*kmul + uTime*0.85 + bend;
   float p2 = (-0.20*xz.x + dist) * 0.175*kmul + uTime*0.70 + 2.1 + bend*1.3;
 
-  // peaked swell profile — sharp crests, wide troughs (trochoidal feel)
-  float s1 = pow(0.5 + 0.5*sin(p1), 1.9)*2.0 - 1.0;
-  float s2 = pow(0.5 + 0.5*sin(p2), 1.7)*2.0 - 1.0;
-  float h = amp*(0.82*s1 + 0.18*s2);
+  // every wave rolls its own fate: some crash hard, some just bob ashore
+  float wid = floor(p1/6.2831853);                            // this wave's identity
+  float wH = hash(vec2(wid, 7.3));
+  float crashStr = smoothstep(0.22, 0.72, wH);
+  float bcenter = 9.5 + 5.0*uWaves + (wH - 0.5)*3.0;          // personal break point
+  float bz = exp(-pow((dist - bcenter)/(2.0 + 1.6*uWaves), 2.0))
+           * uWaves * (0.20 + 1.6*crashStr);
+  p1 += 0.85*bz*cos(p1);                                      // face steepens, leans shoreward
 
-  // fluid detail: two Seascape octaves, calmer far away and in the shallows
+  // Stokes-like profile: tall sharp crests, shallow flat troughs —
+  // the trough never digs down to expose the seabed
+  float s1 = pow(0.5 + 0.5*sin(p1), 1.9)*1.55 - 0.32;
+  float s2 = pow(0.5 + 0.5*sin(p2), 1.7)*1.45 - 0.28;
+  // a crashed wave DIES past its break point — its energy became whitewater
+  float alive = mix(1.0, smoothstep(bcenter - 2.5, bcenter + 1.0, dist), crashStr*0.85);
+  float h = amp*(0.82*s1*alive + 0.18*s2);
+
+  // the lip: a sharp ridge that rears up and explodes at the crest
+  float lip = pow(max(0.0, sin(p1)), 7.0);
+  h += amp * lip * bz * 0.55;
+
+  // fluid detail: two Seascape octaves, churned violent inside the break zone
   float farFade = smoothstep(50.0, 12.0, dist);
-  float dAmp = (0.05 + uWaves*0.10) * farFade * mix(0.4, 1.0, sh);
+  float dAmp = (0.05 + uWaves*0.10) * farFade * mix(0.4, 1.0, sh) * (1.0 + bz*1.2);
   vec2 duv = xz * 0.55; duv.x *= 0.75;
   float t1 = uTime*0.8;
   h += seaOctave((duv + t1)*1.0, 2.6) * dAmp;
@@ -298,15 +314,17 @@ float waveH(vec2 xz, out float crest, out float carry){
   h += seaOctave((duv - t1)*1.9, 2.2) * dAmp*0.35;
 
   crest = pow(max(0.0, sin(p1))*0.75 + max(0.0, sin(p2))*0.25, 3.0);
+  crest = min(crest + lip*bz*2.2, 2.0);                       // the crash whites out the crest
 
-  // after breaking, the whitewater keeps rolling in — no dead gap before the shore
-  float rolling = pow(max(0.0, sin(p1 - 0.8)), 2.0);
-  float boreBand = smoothstep(16.0, 10.5, dist) * smoothstep(5.0, 7.2, dist);
+  // after breaking, the whitewater keeps rolling in — crashed waves carry the most
+  float rolling = pow(max(0.0, sin(p1 - 0.8)), 2.0) * (0.30 + 1.1*crashStr);
+  float boreBand = smoothstep(13.0, 8.5, dist) * smoothstep(3.6, 5.4, dist);
   carry = rolling * boreBand;
   h += (0.04 + 0.10*uWaves) * carry;
 
   // the swash thins out and never reaches the viewer's feet
-  return h + swashLift(xz.x) * smoothstep(18.0, 7.0, dist) * smoothstep(3.6, 6.2, dist);
+  h += swashLift(xz.x) * smoothstep(14.0, 5.0, dist) * smoothstep(2.6, 4.4, dist);
+  return h;
 }
 float waveHfast(vec2 xz){ float c, b; return waveH(xz, c, b); }
 
@@ -319,9 +337,17 @@ float bedY(vec2 xz){
   return b;
 }
 
+/* water level never drops below a film covering the submerged seabed */
+float waterAt(vec2 xz, float bed){
+  float w = waveHfast(xz);
+  if (bed < -0.02) w = max(w, bed + 0.035);
+  return w;
+}
+
 /* combined surface for tracing: whichever is higher, sand or water */
 float fmap(vec3 p){
-  return p.y - max(bedY(p.xz), waveHfast(p.xz));
+  float b = bedY(p.xz);
+  return p.y - max(b, waterAt(p.xz, b));
 }
 
 /* Seascape-style bisection heightfield tracing */
@@ -332,7 +358,7 @@ float trace(vec3 ro, vec3 rd, out vec3 p){
   if (hx > 0.0) return -1.0;              // ray escapes to the sky
   float hm = fmap(ro);
   float tmid = 0.0;
-  for (int i = 0; i < 9; i++){
+  for (int i = 0; i < 12; i++){
     tmid = mix(tm, tx, hm/(hm - hx));
     p = ro + rd*tmid;
     float hmid = fmap(p);
@@ -376,6 +402,7 @@ void main(){
     float bed  = bedY(p.xz);
     float crest, carry;
     float wat  = waveH(p.xz, crest, carry);
+    if (bed < -0.02) wat = max(wat, bed + 0.035);   // seabed always filmed over
     float depth = wat - bed;                     // water column here
 
     // ---- sand: lit as terrain, with wind ripples and grain ----
@@ -406,7 +433,7 @@ void main(){
     wetSand += skyRef * wet * (0.08 + 0.34*grz);                // mirror only at grazing angles
     // the light's column mirrored in the wet film near the waterline
     wetSand += P_sun() * pow(max(dot(reflect(rd, vec3(0.0,1.0,0.0)), uSunDir), 0.0), 180.0)
-             * wet * 1.4 * uLightI * smoothstep(5.5, 8.5, dist);
+             * wet * 1.4 * uLightI * smoothstep(3.8, 6.0, dist);
 
     // pebbles: clustered along the high-tide line, not sprinkled everywhere
     float pebFade = smoothstep(15.0, 3.5, dist);
@@ -446,9 +473,8 @@ void main(){
     } else {
       // ---- water ----
       float e = 0.12;
-      float cD, bD;
-      float hX = waveH(p.xz + vec2(e, 0.0), cD, bD);
-      float hZ = waveH(p.xz + vec2(0.0, -e), cD, bD);
+      float hX = waterAt(p.xz + vec2(e, 0.0), bedY(p.xz + vec2(e, 0.0)));
+      float hZ = waterAt(p.xz + vec2(0.0, -e), bedY(p.xz + vec2(0.0, -e)));
       vec3 n = normalize(vec3(-(hX - wat)/e, 1.0, (hZ - wat)/e));
       n = normalize(n + rippleN(p.xz));
 
@@ -476,25 +502,27 @@ void main(){
       float breakH = 0.78 * max(depth, 0.05);                   // breaking criterion H≈0.78d
       float over = smoothstep(breakH*0.55, breakH*1.05, max(wat, 0.0));
       float foamTex = fbm(p.xz*vec2(0.9, 3.2) + vec2(0.0, uTime*1.1));   // streaks along the crest
-      float bubbles = smoothstep(0.40, 0.75, noise2(p.xz*7.0 + vec2(0.0, uTime*1.8)));
       float bore  = over * crest * smoothstep(2.2, 0.7, depth); // spilling whitewater
       bore = max(bore, carry * smoothstep(1.0, 0.12, depth));   // ...rolling on to the sand
       // waves break in sections along the crest, never as one solid rope
-      float sect = smoothstep(0.30, 0.72, fbm(vec2(lat*0.16, dist*0.05) + vec2(uTime*0.05, 0.0)));
-      bore *= 0.30 + 0.80*sect;
-      float rim   = smoothstep(0.16, 0.02, depth);              // swash leading edge
+      float sect = smoothstep(0.22, 0.72, fbm(vec2(lat*0.16, dist*0.05) + vec2(uTime*0.05, 0.0)));
+      bore *= 0.25 + 0.75*sect;
+      float rim   = smoothstep(0.10, 0.015, depth);             // swash leading edge
       float caps  = over * smoothstep(24.0, 40.0, dist) * 0.5;  // offshore whitecaps
-      float foam  = clamp(bore*2.1 + rim*1.4 + caps, 0.0, 1.0);
-      foam *= smoothstep(4.3, 6.2, dist);                     // no foam up the dry beach
-      foam *= mix(0.6, 1.0, foamTex);
-      foam = max(foam - bubbles*0.35*foam, 0.0);                // bubbly holes
-      water = mix(water, P_foam()*mix(1.0, 1.3, bore), min(foam*1.2, 1.0));
-      // spray flung off the breaking crests
+      float foam  = clamp(bore*1.6 + rim*1.0 + caps, 0.0, 1.0);
+      foam *= smoothstep(3.2, 4.6, dist);                     // no foam up the dry beach
+      foam *= 0.72 + 0.28*foamTex;                            // large-scale variety, stays white
+      // fine bubble grain lives in the COLOR — white on white, never gray holes
+      float fine  = noise2(p.xz*22.0 + vec2(uTime*1.3, -uTime*2.2));
+      float fine2 = noise2(p.xz*46.0 - vec2(uTime*0.8, uTime*1.6));
+      vec3 foamCol = P_foam() * (0.90 + 0.07*fine + 0.06*fine2);
+      water = mix(water, foamCol*mix(1.0, 1.22, bore), min(foam, 1.0));
+      // spray flung off the breaking crests, harder in big surf
       float sprayN = noise2(p.xz*16.0 + vec2(uTime*2.5, -uTime*4.5));
-      water += P_foam() * smoothstep(0.70, 0.90, sprayN) * bore * crest * 1.6;
+      water += P_foam() * smoothstep(0.70, 0.90, sprayN) * bore * crest * (1.4 + uWaves*1.4);
       // lace left on the film as it retreats
       float lace = smoothstep(0.60, 0.85, fbm(p.xz*vec2(2.4, 3.8) - vec2(0.0, uTime*0.3)))
-                 * smoothstep(0.5, 0.08, depth) * 0.55 * smoothstep(5.5, 8.0, dist);
+                 * smoothstep(0.5, 0.08, depth) * 0.40 * smoothstep(3.8, 5.6, dist);
       water = mix(water, P_foam(), lace);
 
       col = mix(wetSand, water, smoothstep(0.005, 0.05, depth));
