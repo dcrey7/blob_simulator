@@ -51,7 +51,7 @@
 
 const SW = 256, SH = 160;          // simulation grid
 const CW = 128, CH = 80;           // curl instance grid (one candidate per cell)
-const DOMW = 60.0, DOML = 90.0;    // world size of the domain (metres)
+const DOMW = 78.0, DOML = 46.0;   // wide so the side edges fall outside the frame    // world size of the domain (metres)
 const G = 9.81;
 
 const canvas = document.getElementById('gl');
@@ -82,8 +82,8 @@ const float G = ${G.toFixed(4)};
 // v=0 is nearest the camera (dry sand); v=1 is far offshore (deep water)
 float bedAt(vec2 uv){
   float s = uv.y;
-  float b = mix(1.1, -7.0, smoothstep(0.02, 0.85, s));
-  b += 0.35*sin(uv.x*9.0)*smoothstep(0.2, 0.9, s);      // a little longshore variation
+  float b = mix(0.85, -5.0, smoothstep(0.12, 0.95, s));
+  b += 0.18*sin(uv.x*7.0)*smoothstep(0.2, 0.9, s);      // a little longshore variation
   return b;
 }`;
 
@@ -124,7 +124,7 @@ void main(){
   vec2 vA = S(back).yz;
   vec2 grad = vec2(eta(uv+dx) - eta(uv-dx), eta(uv+dy) - eta(uv-dy))/(2.0*uCell);
   vec2 vN = vA - G*uDt*grad;
-  vN *= 1.0 - 0.55*uDt;                                   // bed friction
+  vN *= 1.0 - 0.22*uDt;                                   // bed friction
   // shallow water slows and stops the flow on dry sand
   vN *= smoothstep(0.0, 0.12, h);
 
@@ -140,16 +140,16 @@ void main(){
   // kills them without visibly smoothing the waves.
   float hAvg = 0.25*(sL.x + sR.x + sD.x + sU.x);
   vec2  vAvg = 0.25*(sL.yz + sR.yz + sD.yz + sU.yz);
-  hN = mix(hN, hAvg, 0.10);
-  vN = mix(vN, vAvg, 0.16);
+  hN = mix(hN, hAvg, 0.035);
+  vN = mix(vN, vAvg, 0.06);
 
   // --- the swell enters at the offshore boundary ---
   if (uv.y > 0.965){
-    float T = mix(9.0, 4.0, uPeriod);                    // wave period, seconds
-    float amp = 0.30 + 2.0*uSwell;
+    float T = mix(7.0, 3.6, uPeriod);                    // wave period, seconds
+    float amp = 0.45 + 1.9*uSwell;
     float surf = amp*sin(6.2831853*uTime/T)
                + 0.35*amp*sin(6.2831853*uTime/(T*0.61) + 1.7 + uv.x*3.0);
-    hN = mix(hN, max(-bed + surf, 0.05), 0.45);
+    hN = mix(hN, max(-bed + surf, 0.05), 0.75);
     vN = mix(vN, vec2(0.0, -sqrt(G*max(-bed, 0.5))*0.10), 0.5);
   }
   // absorb at the sides
@@ -421,9 +421,9 @@ function resize(){
 addEventListener('resize', resize); resize();
 
 const VP = new Float32Array(16);
-const eye = [0, 9.5, 14.0];
+const eye = [0, 2.05, -2.2];   // standing ON the sand, inside the domain
 function buildVP(){
-  const target = [0, 0, -34];
+  const target = [0, 0.45, -21.0];
   let fx = target[0]-eye[0], fy = target[1]-eye[1], fz = target[2]-eye[2];
   const fl = Math.hypot(fx,fy,fz); fx/=fl; fy/=fl; fz/=fl;
   let rx = -fz, ry = 0, rz = fx;      // right = normalize(cross(forward, worldUp))
