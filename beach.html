@@ -158,12 +158,28 @@ float seaOctave(vec2 uv, float choppy){
   return pow(1.0 - pow(wv.x*wv.y, 0.65), choppy);
 }
 
-/* asymmetric swash: fast uprush, slow backwash, riding the set envelope */
+/* the swash, locked to wave ARRIVAL: every bore that lands drives one
+   run up the sand (fast uprush) and one drain back to sea (slow backwash) */
 float swashLift(float lat){
-  float cyc = fract(uTime*0.075 + sin(lat*0.14)*0.06);
-  float runP = smoothstep(0.0, 0.16, cyc) * (1.0 - smoothstep(0.24, 1.0, cyc));
-  float setEnv = 0.62 + 0.38*sin(uTime*0.085);
-  return (0.10 + uWaves*0.13) * runP * setEnv;
+  float cyc = fract(uTime*0.135 + sin(lat*0.14)*0.05);      // one cycle per wave
+  float runP = smoothstep(0.0, 0.13, cyc)                    // surge up, hard and fast
+             * (1.0 - smoothstep(0.20, 0.92, cyc));          // drain back, slow
+  float setEnv = 0.55 + 0.45*sin(uTime*0.085);               // big sets reach further
+  return (0.16 + uWaves*0.30) * runP * setEnv;
+}
+
+/* Worley cells: whitewater is made of discrete rafts and clumps, never a sheet.
+   Returns the distance to the nearest clump centre. */
+float clumps(vec2 q){
+  vec2 c = floor(q), f = fract(q);
+  float best = 8.0;
+  for (int j = -1; j <= 1; j++)
+  for (int i = -1; i <= 1; i++){
+    vec2 g = vec2(float(i), float(j));
+    vec2 o = vec2(hash(c + g), hash(c + g + 3.71));
+    best = min(best, length(g + o - f));
+  }
+  return best;
 }
 
 /* the sea: big shoreward swells + choppy octave detail, with shoaling.
@@ -608,19 +624,41 @@ void main(){
       float caps  = over * smoothstep(24.0, 40.0, dist) * 0.5;  // offshore whitecaps
       // the simulated foam field: whitewater with memory, born where water
       // collided with itself and carried shoreward since
+      // THE EDGE of an overlapping wave layer: a steep shoreward-facing step in
+      // the surface. Water tears white along exactly that line as it spills over.
+      float step1 = (hZ - wat)/e;
+      float frontEdge = smoothstep(0.22, 0.80, step1);         // the spilling face
+      float lipEdge   = smoothstep(0.55, 1.5, step1);          // the overhanging brink
+      // dense white concentrated AT the brink, thinning out behind it
+      float brink = exp(-pow((step1 - 1.15)/0.52, 2.0)) * smoothstep(0.35, 0.8, step1);
+
       float fSim = smoothstep(0.10, 0.65, foamAt(p.xz));
-      float foam  = clamp(fSim*1.05 + bore*0.7 + rim*0.7 + caps + crashNow*0.8, 0.0, 1.0);
-      foam *= smoothstep(4.8, 6.4, dist);                     // no foam up the dry beach
-      foam *= 0.72 + 0.28*foamTex;                            // large-scale variety, stays white
+      // soft foam: shatters into rafts and clumps
+      float soft = clamp(fSim*1.0 + bore*0.65 + rim*0.7 + caps + crashNow*0.7
+                       + frontEdge*0.60, 0.0, 1.0);
+      // hard foam: the crisp white tear-line along the layer's leading edge
+      float hard = clamp(brink*1.8 + lipEdge*0.85, 0.0, 1.0);
+
+      soft *= smoothstep(4.8, 6.4, dist);                     // no foam up the dry beach
+      soft *= 0.72 + 0.28*foamTex;                            // large-scale variety
+      // BREAK IT INTO PIECES: dense foam merges into rafts, thinning foam
+      // shatters into scattered clumps with dark water between them
+      float cl1 = clumps(p.xz*vec2(1.15, 1.55) + vec2(0.0, uTime*0.55));
+      float cl2 = clumps(p.xz*vec2(3.1, 4.0) - vec2(uTime*0.25, uTime*1.1));
+      float rad = soft*0.62;
+      float mask = smoothstep(rad*0.55, rad*0.05, cl1*0.72 + cl2*0.28);
+      soft = clamp(soft*0.32 + mask*soft*1.18, 0.0, 1.0);
+      float foam = clamp(max(hard*smoothstep(4.8, 6.4, dist), soft), 0.0, 1.0);
       // fine bubble grain lives in the COLOR — white on white, never gray holes
       float fine  = noise2(p.xz*22.0 + vec2(uTime*1.3, -uTime*2.2));
       float fine2 = noise2(p.xz*46.0 - vec2(uTime*0.8, uTime*1.6));
       vec3 foamCol = P_foam() * (0.90 + 0.07*fine + 0.06*fine2);
       water = mix(water, foamCol*mix(1.0, 1.22, bore), min(foam, 1.0));
+      water += P_foam() * hard * 0.45;                         // the brink burns brightest
       // spray flung off the breaking crests, harder in big surf
       float sprayN = noise2(p.xz*16.0 + vec2(uTime*2.5, -uTime*4.5));
       water += P_foam() * smoothstep(0.70, 0.90, sprayN)
-             * (bore * crest + crashNow*0.7 + fSim*0.35) * (1.4 + uWaves*1.4);
+             * (bore * crest + crashNow*0.7 + fSim*0.35 + lipEdge*1.1) * (1.4 + uWaves*1.4);
       // lace left on the film as it retreats
       float lace = smoothstep(0.60, 0.85, fbm(p.xz*vec2(2.4, 3.8) - vec2(0.0, uTime*0.3)))
                  * smoothstep(0.5, 0.08, depth) * 0.40 * smoothstep(4.6, 6.4, dist);
@@ -637,6 +675,78 @@ void main(){
   col = col*(2.51*col + 0.03)/(col*(2.43*col + 0.59) + 0.14);
   col = pow(clamp(col, 0.0, 1.0), vec3(1.0/2.2));
   fragColor = vec4(col, 1.0);
+}`;
+
+/* airborne spray: water thrown clear of the surface when a wave collides with
+   itself — fine droplets and heavier chunks, on ballistic arcs */
+const SPRAY_VERT = `#version 300 es
+layout(location=0) in vec4 aPos;     // xyz world position, w metre size
+layout(location=1) in vec4 aMeta;    // brightness, seed, foaminess, spin
+layout(location=2) in vec3 aVel;     // world velocity (for motion streaking)
+uniform mat4 uVP;
+uniform float uPx;
+out float vB, vS, vF, vSpin, vStretch;
+out vec2 vDir;
+void main(){
+  vec4 c0 = uVP * vec4(aPos.xyz, 1.0);
+  vec4 c1 = uVP * vec4(aPos.xyz + aVel*0.05, 1.0);
+  gl_Position = c0;
+  vec2 s0 = c0.xy/max(c0.w, 0.05), s1 = c1.xy/max(c1.w, 0.05);
+  vec2 dv = s1 - s0;
+  float dl = length(dv);
+  vDir = dl > 1e-5 ? dv/dl : vec2(1.0, 0.0);
+  vStretch = clamp(dl*11.0, 0.0, 1.0);            // fast water tears into streaks
+  gl_PointSize = clamp(aPos.w * uPx / max(c0.w, 0.35) * (1.0 + vStretch*0.7), 1.0, 90.0);
+  vB = aMeta.x; vS = aMeta.y; vF = aMeta.z; vSpin = aMeta.w;
+}`;
+const SPRAY_FRAG = `#version 300 es
+precision highp float;
+in float vB, vS, vF, vSpin, vStretch;
+in vec2 vDir;
+uniform vec3 uWaterCol;      // aqua of the sea, so chunks read as water
+uniform vec3 uLitCol;        // sunlit white
+out vec4 fragColor;
+float h1(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+void main(){
+  vec2 d = gl_PointCoord - 0.5;
+  // tumble the piece, then stretch it along its flight path
+  float c = cos(vSpin), s = sin(vSpin);
+  d = mat2(c, -s, s, c)*d;
+  vec2 e = vec2(dot(d, vDir), dot(d, vec2(-vDir.y, vDir.x)));
+  e.x /= (1.0 + vStretch*2.1);
+  float r = length(e);
+  // torn, irregular outline — a broken piece of water, not a dot
+  float ang = atan(e.y, e.x);
+  float wob = 0.34 + 0.11*sin(ang*3.0 + vS*24.0) + 0.07*sin(ang*5.0 - vS*15.0);
+  float body = smoothstep(wob, wob*0.42, r);
+  float core = smoothstep(wob*0.72, 0.0, r);
+  // water body with a foamy, light-catching skin
+  vec3 col = mix(uWaterCol, uLitCol, clamp(vF + core*0.45, 0.0, 1.0));
+  float a = body * vB;
+  fragColor = vec4(col*a, a);        // premultiplied
+}`;
+
+/* splat: where a flying chunk lands, it slams foam into the foam field */
+const SPLAT_VERT = `#version 300 es
+layout(location=0) in vec3 aSplat;   // world x, distance, strength
+uniform vec2 uFoamDims;              // FOAM_X, FOAM_Z
+uniform float uSplatPx;
+out float vStr;
+void main(){
+  float u = aSplat.x/(2.0*uFoamDims.x) + 0.5;
+  float v = aSplat.y/uFoamDims.y;
+  gl_Position = vec4(u*2.0 - 1.0, v*2.0 - 1.0, 0.0, 1.0);
+  gl_PointSize = uSplatPx;
+  vStr = aSplat.z;
+}`;
+const SPLAT_FRAG = `#version 300 es
+precision highp float;
+in float vStr;
+out vec4 fragColor;
+void main(){
+  float r = length(gl_PointCoord - 0.5)*2.0;
+  float a = smoothstep(1.0, 0.15, r)*vStr;
+  fragColor = vec4(a, 0.0, 0.0, a);
 }`;
 
 /* post pass: mip-chain bloom (sun, moon, glitter, foam), vignette, grain */
@@ -674,8 +784,13 @@ if (!gl){
 }
 
 const FOAM_RES = 512;         // resolution of the foam simulation field
-let progScene = null, progPost = null, progFoam = null, U = {}, UP = {}, UF = {};
+const SPRAY_N = 1400;         // airborne droplets and chunks
+const MAXSPLAT = 256;         // landing splashes injected into the foam field
+let progScene = null, progPost = null, progFoam = null, progSpray = null, progSplat = null;
+let U = {}, UP = {}, UF = {}, US = {}, USP = {};
 let foamTex = [null, null], foamFBO = [null, null], foamCur = 0;
+let sprayVAO = null, sprayPosBuf = null, sprayMetaBuf = null, sprayVelBuf = null;
+let splatVAO = null, splatVBO = null;
 let sceneTex = null, sceneFBO = null;
 
 function compile(type, src){
@@ -708,6 +823,42 @@ function buildPrograms(){
   UP = {};
   for (const n of ['uTex','uRes','uTime'])
     UP[n] = gl.getUniformLocation(progPost, n);
+
+  progSpray = makeProg(SPRAY_VERT, SPRAY_FRAG);
+  US = { uVP: gl.getUniformLocation(progSpray, 'uVP'),
+         uPx: gl.getUniformLocation(progSpray, 'uPx'),
+         uWaterCol: gl.getUniformLocation(progSpray, 'uWaterCol'),
+         uLitCol: gl.getUniformLocation(progSpray, 'uLitCol') };
+  sprayVAO = gl.createVertexArray();
+  sprayPosBuf = gl.createBuffer();
+  sprayMetaBuf = gl.createBuffer();
+  sprayVelBuf = gl.createBuffer();
+  gl.bindVertexArray(sprayVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, sprayPosBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, SPRAY_N*4*4, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, sprayMetaBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, SPRAY_N*4*4, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, sprayVelBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, SPRAY_N*3*4, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  progSplat = makeProg(SPLAT_VERT, SPLAT_FRAG);
+  USP = { uFoamDims: gl.getUniformLocation(progSplat, 'uFoamDims'),
+          uSplatPx: gl.getUniformLocation(progSplat, 'uSplatPx') };
+  splatVAO = gl.createVertexArray();
+  splatVBO = gl.createBuffer();
+  gl.bindVertexArray(splatVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, splatVBO);
+  gl.bufferData(gl.ARRAY_BUFFER, MAXSPLAT*3*4, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
 
   progFoam = makeProg(VERT, FOAMSIM);
   gl.useProgram(progFoam);
@@ -775,6 +926,117 @@ function resize(){
 }
 window.addEventListener('resize', resize);
 resize();
+
+/* ---------- spray: discrete water torn off the breaking crests ---------- */
+
+const sprayPos = new Float32Array(SPRAY_N*4);
+const sprayMeta = new Float32Array(SPRAY_N*4);
+const sprayVel = new Float32Array(SPRAY_N*3);
+const spray = Array.from({length: SPRAY_N}, () => ({ life: 0 }));
+const splatBuf = new Float32Array(MAXSPLAT*3);
+let sprayHead = 0, sprayLive = 0, splatCount = 0;
+let burstTimer = 0;
+const sprayVP = new Float32Array(16);
+
+function rnd(a, b){ return a + Math.random()*(b-a); }
+
+/* ONE COLLISION: a mass of water slams into the water ahead of it and shatters.
+   Pieces are hurled out in a fan — some big lumps, mostly torn droplets. */
+function burst(bx, bz, by, energy, waves){
+  const n = Math.round(18 + 46*energy);
+  for (let i = 0; i < n; i++){
+    const p = spray[sprayHead];
+    sprayHead = (sprayHead + 1) % SPRAY_N;
+    const heavy = Math.random() < 0.20;
+    // fan: mostly forward and up, spreading sideways — like debris off an impact
+    const az = rnd(-0.85, 0.85);
+    const el = rnd(0.35, 1.35);
+    const sp = (heavy ? rnd(1.2, 3.0) : rnd(2.4, 7.0)) * (0.5 + energy*0.9);
+    p.x = bx + rnd(-0.7, 0.7);
+    p.z = bz + rnd(-0.5, 0.5);
+    p.y = by + rnd(0.0, 0.28);
+    p.vx = Math.sin(az)*sp*0.55 + rnd(-0.5, 0.5);
+    p.vy = Math.sin(el)*sp;
+    p.vz = Math.cos(az)*sp*0.85;                       // hurled toward the shore
+    p.size = heavy ? rnd(0.16, 0.42) : rnd(0.035, 0.13);
+    p.life = p.age = heavy ? rnd(1.1, 1.9) : rnd(0.55, 1.3);
+    p.seed = Math.random();
+    p.foam = heavy ? rnd(0.25, 0.6) : rnd(0.55, 1.0);  // big lumps stay watery
+    p.spin = rnd(0, 6.28);
+    p.dspin = rnd(-4.0, 4.0);
+    p.drag = heavy ? 0.45 : 1.35;
+  }
+}
+
+function stepSpray(dt, waves, setEnv, cycUp){
+  splatCount = 0;
+  if (dt > 0 && waves > 0.05){
+    // collisions fire along the breaker line, harder and more often in big sets
+    burstTimer -= dt;
+    const interval = 0.55/(0.25 + waves*1.5*(0.4 + setEnv));
+    while (burstTimer <= 0){
+      burstTimer += interval*rnd(0.55, 1.6);
+      const bDist = 11.0 + 6.0*waves + rnd(-2.4, 2.4);
+      burst(rnd(-26, 26), -bDist, 0.28 + waves*0.55,
+            Math.min(waves*(0.55 + 0.75*setEnv)*rnd(0.6, 1.35), 1.0), waves);
+    }
+  }
+  let k = 0;
+  for (const p of spray){
+    if (p.life <= 0) continue;
+    p.age -= dt;
+    if (p.age <= 0){ p.life = 0; continue; }
+    const d = Math.exp(-p.drag*dt);
+    p.vx *= d; p.vz *= d;
+    p.vy -= 7.0*dt;                                     // gravity (stylised)
+    p.x += p.vx*dt; p.y += p.vy*dt; p.z += p.vz*dt;
+    p.spin += p.dspin*dt;
+    if (p.y < 0.12){                                    // it lands and rejoins the sea
+      p.life = 0;
+      if (splatCount < MAXSPLAT && p.size > 0.06){
+        splatBuf[splatCount*3]   = p.x;
+        splatBuf[splatCount*3+1] = -p.z;
+        splatBuf[splatCount*3+2] = Math.min(p.size*3.0, 0.9);
+        splatCount++;
+      }
+      continue;
+    }
+    const t = p.age/p.life;
+    sprayPos[k*4]   = p.x;
+    sprayPos[k*4+1] = p.y;
+    sprayPos[k*4+2] = p.z;
+    sprayPos[k*4+3] = p.size;
+    sprayMeta[k*4]   = Math.min(t*2.4, 1.0)*0.9;        // fade as it dies
+    sprayMeta[k*4+1] = p.seed;
+    sprayMeta[k*4+2] = p.foam;
+    sprayMeta[k*4+3] = p.spin;
+    sprayVel[k*3]   = p.vx;
+    sprayVel[k*3+1] = p.vy;
+    sprayVel[k*3+2] = p.vz;
+    k++;
+  }
+  sprayLive = k;
+}
+
+/* view-projection matching the scene camera (focal 1.4, fixed pitch) */
+function buildSprayVP(ex, ey, ez){
+  let fx = 0, fy = -0.16, fz = -1;
+  const fl = Math.hypot(fx, fy, fz); fx /= fl; fy /= fl; fz /= fl;
+  let rx = -fz, ry = 0, rz = fx;
+  const rl = Math.hypot(rx, rz); rx /= rl; rz /= rl;
+  const ux = ry*fz - rz*fy, uy = rz*fx - rx*fz, uz = rx*fy - ry*fx;
+  const tx = -(rx*ex + ry*ey + rz*ez);
+  const ty = -(ux*ex + uy*ey + uz*ez);
+  const tz = -(fx*ex + fy*ey + fz*ez);
+  const f = 1.4, asp = W/H, near = 0.1, far = 400;
+  const A = (far+near)/(near-far), B = 2*far*near/(near-far), fa = f/asp;
+  // columns: x' = fa*right, y' = f*up, z' = A*forward, w = forward
+  sprayVP[0]=fa*rx; sprayVP[1]=f*ux; sprayVP[2]=A*fx;    sprayVP[3]=fx;
+  sprayVP[4]=fa*ry; sprayVP[5]=f*uy; sprayVP[6]=A*fy;    sprayVP[7]=fy;
+  sprayVP[8]=fa*rz; sprayVP[9]=f*uz; sprayVP[10]=A*fz;   sprayVP[11]=fz;
+  sprayVP[12]=fa*tx; sprayVP[13]=f*ty; sprayVP[14]=A*tz+B; sprayVP[15]=tz;
+  return sprayVP;
+}
 
 /* ---------- pointer → world ripples ---------- */
 
@@ -918,6 +1180,21 @@ function frame(now){
   gl.uniform1f(UF.uTime, simTime);
   gl.uniform1f(UF.uWaves, S.waves);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // landing chunks slam their own foam into the field (splashes rejoining the sea)
+  if (splatCount > 0){
+    gl.useProgram(progSplat);
+    gl.uniform2f(USP.uFoamDims, 46.0, 64.0);
+    gl.uniform1f(USP.uSplatPx, 9.0);
+    gl.bindVertexArray(splatVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, splatVBO);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, splatBuf, 0, splatCount*3);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);                  // additive foam injection
+    gl.drawArrays(gl.POINTS, 0, splatCount);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+  }
   foamCur = nxt;
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
@@ -940,6 +1217,32 @@ function frame(now){
   gl.uniform2f(U.uCam, camX, camY);
   gl.uniform4fv(U.uRip, rips);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // ---- pass 1b: airborne spray, into the same buffer so bloom catches it ----
+  const setEnv = 0.55 + 0.45*Math.sin(simTime*0.085);
+  const cyc = (simTime*0.135) % 1;
+  const cycUp = Math.max(0, 1 - Math.abs(cyc - 0.09)/0.16);
+  stepSpray(simDt, S.waves, setEnv, cycUp);
+  if (sprayLive > 0){
+    gl.useProgram(progSpray);
+    gl.uniformMatrix4fv(US.uVP, false, buildSprayVP(camX, 3.4 + camY, 0));
+    gl.uniform1f(US.uPx, canvas.height*0.5*1.4);
+    const dayL = 1.0 - nightF*0.72;
+    gl.uniform3f(US.uWaterCol, 0.52*dayL, 0.80*dayL, 0.86*dayL);
+    gl.uniform3f(US.uLitCol, 1.02*dayL, 1.02*dayL, 1.0*dayL);
+    gl.bindVertexArray(sprayVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, sprayPosBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, sprayPos, 0, sprayLive*4);
+    gl.bindBuffer(gl.ARRAY_BUFFER, sprayMetaBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, sprayMeta, 0, sprayLive*4);
+    gl.bindBuffer(gl.ARRAY_BUFFER, sprayVelBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, sprayVel, 0, sprayLive*3);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // premultiplied over
+    gl.drawArrays(gl.POINTS, 0, sprayLive);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+  }
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, canvas.width, canvas.height);
