@@ -172,10 +172,10 @@ void main(){
   // thresholds set from MEASURED values in this sim, not textbook ones: a
   // shallow-water wave of height eta in depth h has Fr ~ eta/h * something
   // well under 1 except in the last metre, and surface slopes here run 0.005-0.04
-  float breaking = smoothstep(0.13, 0.28, froude)*smoothstep(0.009, 0.028, slope)*onshore;
+  float breaking = smoothstep(0.16, 0.32, froude)*smoothstep(0.013, 0.034, slope)*onshore;
   // a narrow depth band: waves break along ONE line where depth ~ wave height,
   // not across the whole shallow field (that produced rows of parallel curls)
-  breaking *= smoothstep(0.18, 0.42, hN)*smoothstep(2.4, 1.1, hN);
+  breaking *= smoothstep(0.30, 0.52, hN)*smoothstep(1.35, 0.80, hN);   // tight band: one crest breaks at a time
 
   // the sheet's life: a TRANSIENT - it is thrown, it flies, it dies
   float ageN;
@@ -281,7 +281,7 @@ void main(){
   float uvy = uvA.y;
 
   float age = st.w;
-  float grow = smoothstep(0.20, 0.48, age);          // fade in, no hard popping
+  float grow = smoothstep(0.26, 0.56, age);          // fade in, no hard popping
   if (grow < 0.02 || st.x < 0.10){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
 
   float h = st.x;
