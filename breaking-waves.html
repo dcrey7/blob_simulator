@@ -414,7 +414,7 @@ function buildVP(){
   const target = [0, 0, -34];
   let fx = target[0]-eye[0], fy = target[1]-eye[1], fz = target[2]-eye[2];
   const fl = Math.hypot(fx,fy,fz); fx/=fl; fy/=fl; fz/=fl;
-  let rx = fz, ry = 0, rz = -fx;
+  let rx = -fz, ry = 0, rz = fx;      // right = normalize(cross(forward, worldUp))
   const rl = Math.hypot(rx,rz); rx/=rl; rz/=rl;
   const ux = ry*fz-rz*fy, uy = rz*fx-rx*fz, uz = rx*fy-ry*fx;
   const tx = -(rx*eye[0]+ry*eye[1]+rz*eye[2]);
