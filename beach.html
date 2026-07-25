@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1430">
+<title>Beach</title>
+<style>
+  :root{
+    --accent: #ffb35c;
+    --panel-bg: rgba(14, 10, 20, 0.50);
+    --panel-line: rgba(255,255,255,0.10);
+    --txt: rgba(240,235,228,0.75);
+    --txt-dim: rgba(240,235,228,0.40);
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#141021; }
+  canvas#gl{
+    position:fixed; inset:0; width:100vw; height:100vh; display:block;
+    cursor:crosshair; touch-action:none;
+  }
+  #ui{
+    position:fixed; inset:0; pointer-events:none;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-user-select:none; user-select:none;
+    transition: opacity .6s ease;
+  }
+  #ui.hidden{ opacity:0; }
+  #ui.hidden #panel{ transform:translateX(-50%) translateY(10px); pointer-events:none; }
+  #wordmark{
+    position:absolute; top:22px; left:26px;
+    font-size:11px; font-weight:600; letter-spacing:0.52em; color:var(--txt-dim);
+  }
+  #hint{
+    position:absolute; top:22px; right:26px;
+    font-size:10px; font-weight:500; letter-spacing:0.16em; color:var(--txt-dim);
+    text-transform:uppercase;
+  }
+  #panel{
+    position:absolute; left:50%; bottom:26px; transform:translateX(-50%);
+    display:flex; align-items:center; gap:22px;
+    padding:14px 22px;
+    background:var(--panel-bg);
+    border:1px solid var(--panel-line);
+    border-radius:100px;
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+    pointer-events:auto;
+    transition: transform .6s ease;
+  }
+  .ctl{ display:flex; align-items:center; gap:10px; }
+  .ctl label{
+    font-size:10px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--txt-dim);
+  }
+  input[type=range]{
+    -webkit-appearance:none; appearance:none;
+    width:110px; height:22px; background:transparent; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:2px; border-radius:1px;
+    background: color-mix(in srgb, var(--txt) 28%, transparent);
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none;
+    width:12px; height:12px; border-radius:50%;
+    background:var(--accent); margin-top:-5px;
+    box-shadow:0 0 10px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  input[type=range]::-moz-range-track{
+    height:2px; border-radius:1px;
+    background: color-mix(in srgb, var(--txt) 28%, transparent);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:12px; height:12px; border:none; border-radius:50%;
+    background:var(--accent);
+    box-shadow:0 0 10px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  #debug{
+    position:fixed; bottom:26px; left:26px; z-index:5;
+    font-family:ui-monospace, monospace; font-size:10px; letter-spacing:0.05em;
+    color:var(--txt-dim); display:none; white-space:pre;
+  }
+  #nogl{
+    position:fixed; inset:0; display:none; place-items:center; text-align:center;
+    color:var(--txt); font-family:system-ui, sans-serif; font-size:14px; line-height:1.7;
+  }
+  @media (max-width: 640px){
+    #panel{ gap:14px; padding:12px 16px; }
+    input[type=range]{ width:74px; }
+    #hint{ display:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <div id="wordmark">BEACH</div>
+  <div id="hint">touch the water &nbsp;·&nbsp; H hides</div>
+  <div id="panel">
+    <div class="ctl"><label for="waves">Waves</label><input id="waves" type="range" min="0" max="1" step="0.001" value="0.55"></div>
+    <div class="ctl"><label for="sun">Sun</label><input id="sun" type="range" min="0" max="1" step="0.001" value="0.45"></div>
+  </div>
+</div>
+<div id="debug"></div>
+<div id="nogl"><div>This beach needs WebGL2.<br>Try a recent Chrome or Firefox.</div></div>
+
+<script>
+'use strict';
+/* ============================================================
+   BEACH — a fullscreen shore simulation from first principles.
+   Physics encoded from coastal science:
+   - spilling breakers on a gentle sandy slope
+   - shoaling: waves shorten, slow, and grow approaching shore
+   - breaking at H ≈ 0.78·depth → whitewater bore rolls in
+   - asymmetric swash: fast uprush, slow backwash, wet sand film
+   - wave sets: slow amplitude beats between components
+   Rendering after GPU Gems ch.1 (sum of directional sines,
+   analytic normals, sharpened-cos crest masks) with a
+   mip-chain bloom post pass. Zero dependencies.
+   ============================================================ */
+
+const MAXRIP = 8;
+
+const VERT = `#version 300 es
+void main(){
+  vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2));
+  gl_Position = vec4(p*2.0-1.0, 0.0, 1.0);
+}`;
+
+const FRAG = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+#define MAXRIP ${MAXRIP}
+
+uniform vec2  uRes;
+uniform float uTime;
+uniform float uWaves;         // swell energy 0..1
+uniform float uSunK;          // 0 dusk .. 1 noon
+uniform vec3  uSunDir;
+uniform vec2  uCam;           // gentle sway
+uniform vec4  uRip[MAXRIP];   // x, z, birth, amp
+
+const float CAMH   = 3.2;     // eye height — standing on the dune
+const float SHOREMIN = 6.5;   // closest the swash reaches (m from camera)
+const float SHOREMAX = 11.0;  // waterline at full backwash
+const float BREAKD = 16.0;    // breaker line distance — H ≈ 0.78·depth here
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float noise2(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*(3.0-2.0*f);
+  return mix(mix(hash(i), hash(i+vec2(1,0)), u.x),
+             mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), u.x), u.y);
+}
+float fbm(vec2 p){
+  return 0.55*noise2(p) + 0.28*noise2(p*2.13+7.7) + 0.17*noise2(p*4.41+3.1);
+}
+
+/* three-stop palette: dusk → golden hour → noon */
+vec3 pal3(vec3 du, vec3 go, vec3 no){
+  return uSunK < 0.5 ? mix(du, go, uSunK*2.0) : mix(go, no, uSunK*2.0-1.0);
+}
+vec3 P_zenith(){  return pal3(vec3(0.055,0.05,0.14), vec3(0.16,0.20,0.44),  vec3(0.15,0.38,0.80)); }
+vec3 P_horizon(){ return pal3(vec3(0.75,0.26,0.19),  vec3(0.95,0.55,0.26),  vec3(0.62,0.78,0.90)); }
+vec3 P_sun(){     return pal3(vec3(1.9,0.72,0.32),   vec3(1.9,1.35,0.75),   vec3(1.9,1.8,1.6)); }
+vec3 P_seaDeep(){ return pal3(vec3(0.045,0.06,0.11), vec3(0.06,0.13,0.19),  vec3(0.05,0.22,0.32)); }
+vec3 P_seaShal(){ return pal3(vec3(0.11,0.14,0.16),  vec3(0.14,0.30,0.33),  vec3(0.12,0.48,0.50)); }
+vec3 P_sss(){     return pal3(vec3(0.35,0.28,0.15),  vec3(0.25,0.52,0.42),  vec3(0.18,0.65,0.55)); }
+vec3 P_sand(){    return pal3(vec3(0.34,0.24,0.22),  vec3(0.78,0.60,0.42),  vec3(0.88,0.78,0.58)); }
+vec3 P_foam(){    return pal3(vec3(0.85,0.62,0.52),  vec3(1.0,0.88,0.74),   vec3(0.97,0.98,0.99)); }
+
+/* ---- sky: gradient + sun + clouds + horizon haze ---- */
+vec3 skyColor(vec3 rd, bool withClouds, bool withSun){
+  float y = max(rd.y, 0.0);
+  vec3 col = mix(P_horizon(), P_zenith(), pow(y, 0.58));
+  float sd = dot(rd, uSunDir);
+  if (withSun){
+    // sun disc grows near the horizon (atmospheric magnification feel)
+    float R = mix(0.055, 0.028, uSunK);
+    float disc = smoothstep(cos(R), cos(R*0.82), sd);
+    col += P_sun() * disc * 1.6;
+    col += P_sun() * pow(max(sd, 0.0), 80.0) * 0.55;  // inner glow
+    col += P_horizon() * pow(max(sd, 0.0), 7.0) * 0.22*(1.0-uSunK*0.5);
+  }
+  col += P_horizon() * exp(-abs(rd.y)*14.0) * 0.10;   // horizon haze band
+  if (withClouds && rd.y > 0.015){
+    vec2 cp = rd.xz/(rd.y + 0.12) * 6.5;
+    float cl = fbm(cp*0.14 + vec2(uTime*0.008, 0.0));
+    float cover = smoothstep(0.48, 0.78, cl) * smoothstep(0.0, 0.12, rd.y);
+    float sunProx = pow(max(sd, 0.0), 3.0);
+    vec3 cloudCol = mix(P_zenith()*0.75 + vec3(0.18), P_sun()*0.55 + P_horizon()*0.45, sunProx);
+    col = mix(col, cloudCol, cover*0.55);
+  }
+  return col;
+}
+
+/* ---- swell field: sum of directional sines with shoaling ----
+   GPU Gems ch.1 form; k grows near shore so waves shorten AND slow,
+   amplitude grows (shoaling), sets ride a slow beat envelope.      */
+const vec2 W1 = vec2(0.10, 1.0);    // mostly shoreward, slight angles
+const vec2 W2 = vec2(-0.22, 1.0);
+const vec2 W3 = vec2(0.30, 1.0);
+
+float swellPhase(vec2 xz, float kmul, vec2 dir, float k0, float w, float ph){   // dispersion: long waves faster
+  vec2 d = normalize(dir);
+  return (d.x*xz.x + d.y*(-xz.y)) * k0 * kmul + w*uTime + ph;
+}
+float waveH(vec2 xz, float dist, out float crest){
+  float sh   = smoothstep(45.0, 9.0, dist);           // shoaling ramp
+  float kmul = mix(1.0, 2.1, sh);
+  float amp  = (0.14 + uWaves*0.55) * mix(0.55, 1.5, sh);
+  float env  = 0.68 + 0.32*sin(uTime*0.085 + dist*0.012);   // wave sets
+  amp *= env;
+  float p1_ = swellPhase(xz, kmul, W1, 0.34, 1.00, 0.0);
+  float p2_ = swellPhase(xz, kmul, W2, 0.25, 0.82, 2.1);
+  float p3_ = swellPhase(xz, kmul, W3, 0.55, 1.35, 4.0);
+  float farFade = smoothstep(42.0, 12.0, dist);       // kill sub-pixel moiré offshore
+  // bend the crests: real wave trains are never straight lines
+  float bend = (noise2(xz*0.055) - 0.5)*2.6 + (noise2(xz*0.13 + 31.7) - 0.5)*1.1;
+  float p1 = p1_ + bend, p2 = p2_ + bend*1.3, p3 = p3_ + bend*0.7;
+  float h = amp*( 0.62*sin(p1) + 0.22*sin(p2)*farFade + 0.10*sin(p3)*farFade );
+  // chop
+  h += amp*0.10*sin(xz.x*1.9 + uTime*1.7)*sin(-xz.y*2.6 - uTime*2.2)*farFade;
+  // sharpened-cos crest mask (GPU Gems eq.8) for foam
+  crest = pow(max(0.0, sin(p1))*0.72 + max(0.0, sin(p2))*0.28, 3.0);
+  return h;
+}
+vec3 seaNormal(vec2 xz, float dist, float scale){
+  float c;
+  float e = 0.18;
+  float hC = waveH(xz, dist, c);
+  float hX = waveH(xz + vec2(e,0.0), dist, c);
+  float hZ = waveH(xz + vec2(0.0,-e), dist+e, c);
+  vec3 n = normalize(vec3(-(hX-hC)/e*scale, 1.0, (hZ-hC)/e*scale));
+  return n;
+}
+
+/* click ripples: expanding rings that bend the surface normal */
+vec3 rippleN(vec2 xz){
+  vec3 acc = vec3(0.0);
+  for (int i=0;i<MAXRIP;i++){
+    float age = uTime - uRip[i].z;
+    if (uRip[i].w < 0.01 || age < 0.0 || age > 4.0) continue;
+    vec2 dv = xz - uRip[i].xy;
+    float dr = length(dv);
+    float wave = sin(dr*7.0 - age*6.5) * exp(-dr*0.55) * exp(-age*1.1) * uRip[i].w;
+    acc.xz += (dv/max(dr, 0.05)) * wave * 0.35;
+  }
+  return acc;
+}
+
+void main(){
+  vec2 uv = (2.0*gl_FragCoord.xy - uRes)/uRes.y;
+
+  // gently swaying camera on the sand, looking out to sea
+  vec3 ro = vec3(uCam.x, CAMH + uCam.y, 0.0);
+  vec3 fw = normalize(vec3(0.0, -0.16, -1.0));
+  vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
+  vec3 up = cross(rt, fw);
+  vec3 rd = normalize(fw*1.4 + rt*uv.x + up*uv.y);
+
+  vec3 col;
+
+  if (rd.y > -0.004){
+    col = skyColor(rd, true, true);
+  } else {
+    float t = -ro.y/rd.y;
+    vec3  p = ro + rd*t;
+    float dist = -p.z;                       // meters out to sea
+    float lat  = p.x;
+
+    // ---- asymmetric swash: fast uprush, slow backwash ----
+    float cyc = fract(uTime*0.075 + sin(lat*0.14)*0.06);
+    float runP = smoothstep(0.0, 0.16, cyc) * (1.0 - smoothstep(0.24, 1.0, cyc));
+    float setEnv = 0.62 + 0.38*sin(uTime*0.085);                 // big sets run higher
+    float edge = SHOREMAX - (SHOREMAX-SHOREMIN)*runP*setEnv
+               + 0.35*sin(lat*0.55 + uTime*0.2) + 0.2*noise2(vec2(lat*0.4, uTime*0.15));
+
+    // ---- sand base ----
+    vec3 sand = P_sand();
+    float grainFade = smoothstep(14.0, 3.0, dist);
+    sand *= 0.94 + 0.12*hash(floor(p.xz*70.0))*grainFade;        // grains
+    sand *= 1.0 + 0.03*sin(dist*2.6 + lat*0.5);                  // micro ripples
+    // wet band: from swash max reach down to the waterline, drying over the cycle
+    float wet = smoothstep(SHOREMIN - 0.6, edge, dist);
+    wet *= smoothstep(SHOREMIN - 0.8, SHOREMIN + 0.4, dist);
+    vec3 wetSand = sand * mix(1.0, 0.55, wet*0.9);
+    wetSand += skyColor(reflect(rd, vec3(0.0,1.0,0.0)), false, false) * wet * 0.12;  // damp sheen
+    col = wetSand;
+
+    float seaMask = smoothstep(edge - 0.1, edge + 0.9, dist);
+    if (seaMask > 0.001){
+      // ---- water ----
+      float crest;
+      float h = waveH(p.xz, dist, crest);
+      float depth = max(0.0, (dist - SHOREMIN) * 0.055);          // gentle sandy slope
+      float nScale = mix(0.25, 1.0, smoothstep(0.0, 12.0, dist)) // calm film near shore
+                   * mix(0.22, 1.0, smoothstep(60.0, 18.0, dist)); // flatten far field
+      vec3 n = seaNormal(p.xz, dist, nScale);
+      n += rippleN(p.xz);
+      n = normalize(n);
+
+      float fres = pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
+      vec3 shallow = mix(P_seaShal(), wetSand, smoothstep(3.5, 0.4, depth*18.0));
+      vec3 body = mix(shallow, P_seaDeep(), smoothstep(0.2, 1.6, depth));
+      vec3 refl = skyColor(reflect(rd, n), false, false);
+      vec3 water = mix(body, refl, clamp(0.10 + 0.70*fres, 0.0, 0.80));
+
+      // sun glitter path — sparkling specular toward the sun
+      float sp = pow(max(dot(reflect(rd, n), uSunDir), 0.0), 320.0);
+      sp *= 0.6 + 1.7*hash(floor(p.xz*vec2(9.0, 13.0)) + floor(uTime*7.0));
+      water += P_sun() * sp * 3.2;
+
+      // translucent backlit crests (subsurface glow near the sun's column)
+      float sunCol = pow(max(dot(normalize(vec3(rd.x, 0.0, rd.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0), 6.0);
+      water += P_sss() * crest * sunCol * smoothstep(20.0, 8.0, dist) * 0.5;
+
+      // ---- whitewater: breaker bore + swash rim (spilling breakers) ----
+      float foamTex = fbm(p.xz*vec2(1.4, 2.4) + vec2(0.0, uTime*0.9));
+      float bore = smoothstep(BREAKD+4.5, BREAKD, dist) * smoothstep(edge+0.2, edge+2.4, dist);
+      float breaker = bore * crest * (0.9 + uWaves*1.3);
+      float rim = smoothstep(edge + 0.85, edge + 0.12, dist);      // swash leading edge
+      float foam = clamp(breaker*1.8 + rim*1.2, 0.0, 1.0);
+      foam *= smoothstep(0.20, 0.52, foamTex + foam*0.4);
+      water = mix(water, P_foam(), foam);
+      // lacy leftover bubbles on the film
+      float lace = smoothstep(0.62, 0.86, fbm(p.xz*vec2(2.2, 3.6) - vec2(0.0, uTime*0.25)))
+                 * smoothstep(edge+2.2, edge+0.4, dist) * 0.5;
+      water = mix(water, P_foam(), lace*seaMask);
+
+      col = mix(col, water, seaMask);
+
+      // horizon aerial perspective
+      col = mix(col, skyColor(vec3(rd.x, 0.002, rd.z), false, false), smoothstep(45.0, 210.0, t));
+    }
+  }
+
+  // filmic grade
+  col *= 0.92;
+  col = col*(2.51*col + 0.03)/(col*(2.43*col + 0.59) + 0.14);
+  col = pow(clamp(col, 0.0, 1.0), vec3(1.0/2.2));
+  fragColor = vec4(col, 1.0);
+}`;
+
+/* post pass: mip-chain bloom (sun, glitter, foam), vignette, grain */
+const POST = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+uniform sampler2D uTex;
+uniform vec2  uRes;
+uniform float uTime;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes;
+  vec3 col = texture(uTex, uv).rgb;
+  vec3 bl = textureLod(uTex, uv, 2.0).rgb*0.20
+          + textureLod(uTex, uv, 3.0).rgb*0.30
+          + textureLod(uTex, uv, 4.0).rgb*0.30
+          + textureLod(uTex, uv, 5.0).rgb*0.20;
+  bl = max(bl - 0.52, vec3(0.0));
+  col = 1.0 - (1.0-col)*(1.0-clamp(bl*0.75, 0.0, 1.0));
+  vec2 sc = uv*2.0 - 1.0;
+  col *= 1.0 - 0.16*pow(dot(sc*0.7, sc*0.7), 1.2);
+  col += (hash(gl_FragCoord.xy + fract(uTime)*vec2(17.0,29.0)) - 0.5)*(2.0/255.0);
+  fragColor = vec4(col, 1.0);
+}`;
+
+/* ---------- GL setup ---------- */
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false,
+  powerPreference:'high-performance', preserveDrawingBuffer:false });
+if (!gl){
+  document.getElementById('nogl').style.display = 'grid';
+  document.getElementById('ui').style.display = 'none';
+  throw new Error('WebGL2 unavailable');
+}
+
+let progScene = null, progPost = null, U = {}, UP = {};
+let sceneTex = null, sceneFBO = null;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function makeProg(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+function buildPrograms(){
+  progScene = makeProg(VERT, FRAG);
+  gl.useProgram(progScene);
+  U = {};
+  for (const n of ['uRes','uTime','uWaves','uSunK','uSunDir','uCam'])
+    U[n] = gl.getUniformLocation(progScene, n);
+  U.uRip = gl.getUniformLocation(progScene, 'uRip[0]');
+
+  progPost = makeProg(VERT, POST);
+  gl.useProgram(progPost);
+  UP = {};
+  for (const n of ['uTex','uRes','uTime'])
+    UP[n] = gl.getUniformLocation(progPost, n);
+
+  sceneFBO = gl.createFramebuffer();
+  sceneTex = gl.createTexture();
+}
+function allocSceneTex(){
+  if (!sceneTex) return;
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0,
+                gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+buildPrograms();
+
+canvas.addEventListener('webglcontextlost', e => e.preventDefault());
+canvas.addEventListener('webglcontextrestored', () => { buildPrograms(); allocSceneTex(); });
+
+/* ---------- state ---------- */
+
+const Q = new URLSearchParams(location.search);
+const S = {
+  waves: Q.has('waves') ? +Q.get('waves') : 0.55,
+  sun:   Q.has('sun')   ? +Q.get('sun')   : 0.45,
+  paused: false, uiHidden: false, debug: Q.has('debug'),
+};
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) S.waves = 0.25;
+
+let W = 1, H = 1, dpr = 1, resScale = 1;
+
+function resize(){
+  if (!window.innerWidth || !window.innerHeight) return;
+  W = window.innerWidth; H = window.innerHeight;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width  = Math.max(2, Math.round(W * dpr * resScale));
+  canvas.height = Math.max(2, Math.round(H * dpr * resScale));
+  allocSceneTex();
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- pointer → world ripples ---------- */
+
+let simTime = 0;
+let camX = 0, camY = 0;
+const rips = new Float32Array(MAXRIP*4);
+let ripIdx = 0, lastHover = 0;
+
+function pointerToWorld(cx, cy){
+  const ux = (2*cx - W)/H, uyv = 1 - 2*cy/H;
+  const ro = [camX, 3.2 + camY, 0];
+  let fx = 0, fy = -0.16, fz = -1;
+  const fl = Math.hypot(fx, fy, fz); fx /= fl; fy /= fl; fz /= fl;
+  let rx = -fz, rz = fx;
+  const rl = Math.hypot(rx, rz); rx /= rl; rz /= rl;
+  const upx = fy*rz, upy = fz*rx - fx*rz, upz = -fy*rx;
+  const dx = fx*1.4 + rx*ux + upx*uyv;
+  const dy = fy*1.4 + upy*uyv;
+  const dz = fz*1.4 + rz*ux + upz*uyv;
+  if (dy >= -0.01) return null;
+  const t = -ro[1]/dy;
+  return [ro[0] + dx*t, ro[2] + dz*t];   // world x, z
+}
+function addRipple(wx, wz, amp){
+  rips[ripIdx*4] = wx; rips[ripIdx*4+1] = wz;
+  rips[ripIdx*4+2] = simTime; rips[ripIdx*4+3] = amp;
+  ripIdx = (ripIdx + 1) % MAXRIP;
+}
+window.addEventListener('pointerdown', e => {
+  const w = pointerToWorld(e.clientX, e.clientY);
+  if (w) addRipple(w[0], w[1], 1.0);
+}, { passive:true });
+window.addEventListener('pointermove', e => {
+  uiWake();
+  const now = performance.now();
+  if (now - lastHover < 160) return;
+  lastHover = now;
+  const w = pointerToWorld(e.clientX, e.clientY);
+  if (w && -w[1] > 5.0) addRipple(w[0], w[1], 0.28);
+}, { passive:true });
+
+/* ---------- UI ---------- */
+
+const ui = document.getElementById('ui');
+const dbg = document.getElementById('debug');
+if (S.debug) dbg.style.display = 'block';
+window.addEventListener('error', e => {
+  dbg.style.display = 'block';
+  dbg.textContent = 'ERR: ' + e.message + ' @' + e.lineno;
+});
+
+const wavesEl = document.getElementById('waves'), sunEl = document.getElementById('sun');
+wavesEl.value = S.waves; sunEl.value = S.sun;
+wavesEl.addEventListener('input', e => { S.waves = +e.target.value; });
+sunEl.addEventListener('input', e => { S.sun = +e.target.value; });
+
+let uiTimer = 0;
+function uiWake(){
+  if (S.uiHidden) return;
+  ui.classList.remove('hidden');
+  clearTimeout(uiTimer);
+  uiTimer = setTimeout(() => ui.classList.add('hidden'), 3500);
+}
+uiWake();
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'h' || e.key === 'H'){
+    S.uiHidden = !S.uiHidden;
+    ui.classList.toggle('hidden', S.uiHidden);
+    if (!S.uiHidden) uiWake();
+  }
+  if (e.key === ' '){ S.paused = !S.paused; e.preventDefault(); }
+  if (e.key === 'd' || e.key === 'D'){
+    S.debug = !S.debug; dbg.style.display = S.debug ? 'block' : 'none';
+  }
+});
+
+/* ---------- render loop with adaptive resolution ---------- */
+
+let last = performance.now(), emaMs = 8, frames = 0;
+window.__beach = { fps: 0, scale: 1 };
+
+function frame(now){
+  requestAnimationFrame(frame);
+  let dt = (now - last)/1000;
+  last = now;
+  if (dt > 0.1) dt = 0.1;
+  if (!S.paused) simTime += dt;
+
+  emaMs = emaMs*0.95 + (dt*1000)*0.05;
+  if (++frames % 48 === 0){
+    if (emaMs > 15.5 && resScale > 0.55){ resScale = Math.max(0.55, resScale*0.85); resize(); }
+    else if (emaMs < 9.5 && resScale < 1){ resScale = Math.min(1, resScale*1.1); resize(); }
+    window.__beach.fps = Math.round(1000/emaMs);
+    window.__beach.scale = +resScale.toFixed(2);
+    if (S.debug) dbg.textContent =
+      `${Math.round(1000/emaMs)} fps · render ${(resScale*100)|0}% · t=${simTime.toFixed(0)}s`;
+  }
+
+  camX = Math.sin(simTime*0.11)*0.35;
+  camY = Math.cos(simTime*0.09)*0.06;
+
+  const el = 0.03 + Math.pow(S.sun, 1.3)*0.58;
+  let sx = 0.12*(1.0 - S.sun), sy = Math.sin(el), sz = -Math.cos(el);
+  const sl = Math.hypot(sx, sy, sz); sx /= sl; sy /= sl; sz /= sl;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(progScene);
+  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  gl.uniform1f(U.uTime, simTime);
+  gl.uniform1f(U.uWaves, S.waves);
+  gl.uniform1f(U.uSunK, S.sun);
+  gl.uniform3f(U.uSunDir, sx, sy, sz);
+  gl.uniform2f(U.uCam, camX, camY);
+  gl.uniform4fv(U.uRip, rips);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.useProgram(progPost);
+  gl.uniform1i(UP.uTex, 0);
+  gl.uniform2f(UP.uRes, canvas.width, canvas.height);
+  gl.uniform1f(UP.uTime, simTime);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+requestAnimationFrame(frame);
+
+document.addEventListener('visibilitychange', () => { last = performance.now(); });
+</script>
+</body>
+</html>
