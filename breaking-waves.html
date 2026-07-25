@@ -134,7 +134,8 @@ void main(){
   float fluxY = (sU.x*sU.z - sD.x*sD.z)/(2.0*uCell.y);
   float hN = h - uDt*(fluxX + fluxY);
   hN = max(hN, 0.0);
-  hN = mix(hN, max(-bed, 0.0), 0.02*smoothstep(0.45, 1.0, uv.y));  // gentle offshore relax
+  // (the old offshore relax term was dragging h back to still water across the
+  //  whole outer half - i.e. flattening every wave right where it was injected)
   // numerical viscosity: central differencing breeds grid-scale checkerboard
   // modes, which show up as spikes. Blending toward the neighbourhood mean
   // kills them without visibly smoothing the waves.
@@ -146,10 +147,10 @@ void main(){
   // --- the swell enters at the offshore boundary ---
   if (uv.y > 0.965){
     float T = mix(7.0, 3.6, uPeriod);                    // wave period, seconds
-    float amp = 0.45 + 1.9*uSwell;
+    float amp = 0.22 + 0.85*uSwell;
     float surf = amp*sin(6.2831853*uTime/T)
                + 0.35*amp*sin(6.2831853*uTime/(T*0.61) + 1.7 + uv.x*3.0);
-    hN = mix(hN, max(-bed + surf, 0.05), 0.75);
+    hN = mix(hN, max(-bed + surf, 0.05), 0.5);
     vN = mix(vN, vec2(0.0, -sqrt(G*max(-bed, 0.5))*0.10), 0.5);
   }
   // absorb at the sides
@@ -421,7 +422,7 @@ function resize(){
 addEventListener('resize', resize); resize();
 
 const VP = new Float32Array(16);
-const eye = [0, 2.05, -2.2];   // standing ON the sand, inside the domain
+const eye = [0, 2.5, -0.8];   // standing on the dry sand, inside the domain
 function buildVP(){
   const target = [0, 0.45, -21.0];
   let fx = target[0]-eye[0], fy = target[1]-eye[1], fz = target[2]-eye[2];
