@@ -82,7 +82,7 @@ const float G = ${G.toFixed(4)};
 // v=0 is nearest the camera (dry sand); v=1 is far offshore (deep water)
 float bedAt(vec2 uv){
   float s = uv.y;
-  float b = mix(0.85, -5.0, smoothstep(0.12, 0.95, s));
+  float b = mix(0.85, -4.2, smoothstep(0.10, 0.62, s));   // steeper shoaling zone
   b += 0.18*sin(uv.x*7.0)*smoothstep(0.2, 0.9, s);      // a little longshore variation
   return b;
 }`;
@@ -141,15 +141,20 @@ void main(){
   // kills them without visibly smoothing the waves.
   float hAvg = 0.25*(sL.x + sR.x + sD.x + sU.x);
   vec2  vAvg = 0.25*(sL.yz + sR.yz + sD.yz + sU.yz);
-  hN = mix(hN, hAvg, 0.035);
-  vN = mix(vN, vAvg, 0.06);
+  // scale viscosity by dt: a FIXED blend applied 180x/second compounds to
+  // near-total annihilation (0.965^180 ~ 0.002) and kills the wave in transit
+  hN = mix(hN, hAvg, clamp(1.3*uDt, 0.0, 0.25));
+  vN = mix(vN, vAvg, clamp(2.6*uDt, 0.0, 0.25));
 
   // --- the swell enters at the offshore boundary ---
   if (uv.y > 0.965){
-    float T = mix(7.0, 3.6, uPeriod);                    // wave period, seconds
-    float amp = 0.22 + 0.85*uSwell;
-    float surf = amp*sin(6.2831853*uTime/T)
-               + 0.35*amp*sin(6.2831853*uTime/(T*0.61) + 1.7 + uv.x*3.0);
+    float T = mix(12.0, 7.0, uPeriod);   // long period: one crest in the domain at a time                    // wave period, seconds
+    float amp = 0.18 + 0.62*uSwell;
+    // ONE clean, peaked swell - sharp crest, long flat trough - so a distinct
+    // wave arrives rather than a continuous surge (mixed harmonics muddled it)
+    float ph = 6.2831853*uTime/T + 0.25*sin(uv.x*2.2);
+    float peak = pow(0.5 + 0.5*sin(ph), 4.0);
+    float surf = amp*(peak*2.2 - 0.35);
     hN = mix(hN, max(-bed + surf, 0.05), 0.5);
     vN = mix(vN, vec2(0.0, -sqrt(G*max(-bed, 0.5))*0.10), 0.5);
   }
@@ -161,8 +166,8 @@ void main(){
   // as the wave itself: Froude = |v| / sqrt(g h) reaching 1 on a steep face
   float froude = length(vN)/sqrt(G*max(hN, 0.05));
   float slope  = length(grad);
-  float onshore = clamp(-vN.y*6.0, 0.0, 1.0);             // only fronts running ashore
-  float breaking = smoothstep(0.45, 0.85, froude)*smoothstep(0.14, 0.40, slope)*onshore;
+  float onshore = clamp(-vN.y*3.0, 0.0, 1.0);             // only fronts running ashore
+  float breaking = smoothstep(0.20, 0.52, froude)*smoothstep(0.04, 0.16, slope)*onshore;
   breaking *= smoothstep(0.05, 0.35, hN)*smoothstep(5.5, 2.0, hN);   // only in the shallows
 
   // the sheet's life: a TRANSIENT - it is thrown, it flies, it dies
@@ -172,7 +177,11 @@ void main(){
   ageN = clamp(ageN, 0.0, 1.35);
 
   // hard guards: an unstable cell must never poison the whole field
-  hN = clamp(hN, 0.0, 12.0);
+  float still = max(-bed, 0.0);
+  hN = clamp(hN, 0.0, still + 1.6);            // no unphysical pile-up
+  float cmax = 1.35*sqrt(G*max(hN, 0.05));     // cap flow near the wave celerity
+  float sp = length(vN);
+  if (sp > cmax) vN *= cmax/sp;
   vN = clamp(vN, vec2(-7.0), vec2(7.0));
   if (!(hN == hN)) hN = max(-bed, 0.0);
   if (!(vN.x == vN.x) || !(vN.y == vN.y)) vN = vec2(0.0);
@@ -458,7 +467,7 @@ function frame(now){
   // ---- 1. step the shallow water solver (a few substeps for stability) ----
   gl.disable(gl.DEPTH_TEST);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  const SUB = 3, sdt = Math.min(dt, 1/60)/SUB;
+  const SUB = 8, sdt = Math.min(dt, 1/60)/SUB;   // smaller dt = stability without extra damping
   gl.useProgram(pSim);
   gl.uniform2f(U(pSim,'uTex'), 1/SW, 1/SH);
   gl.uniform2f(U(pSim,'uCell'), DOMW/SW, DOML/SH);
