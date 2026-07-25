@@ -151,7 +151,7 @@ void main(){
     float T = mix(3.6, 2.1, uPeriod);   // wavelength = c*T ~ 13-23m: several steep
                                       // crests fit the 46m domain (a 9.5s period
                                       // gives a 60m wavelength = a tide, not a wave)                    // wave period, seconds
-    float amp = 0.45 + 1.35*uSwell;
+    float amp = 0.34 + 1.0*uSwell;
     // ONE clean, peaked swell - sharp crest, long flat trough - so a distinct
     // wave arrives rather than a continuous surge (mixed harmonics muddled it)
     float ph = 6.2831853*uTime/T + 0.25*sin(uv.x*2.2);
@@ -172,12 +172,12 @@ void main(){
   // thresholds set from MEASURED values in this sim, not textbook ones: a
   // shallow-water wave of height eta in depth h has Fr ~ eta/h * something
   // well under 1 except in the last metre, and surface slopes here run 0.005-0.04
-  float breaking = smoothstep(0.14, 0.30, froude)*smoothstep(0.010, 0.032, slope)*onshore;
+  float breaking = smoothstep(0.17, 0.34, froude)*smoothstep(0.016, 0.040, slope)*onshore;
   breaking *= smoothstep(0.05, 0.35, hN)*smoothstep(5.5, 2.0, hN);   // only in the shallows
 
   // the sheet's life: a TRANSIENT - it is thrown, it flies, it dies
   float ageN;
-  if (breaking > 0.08) ageN = max(age, 0.16) + uDt*1.15;   // being thrown right now
+  if (breaking > 0.13) ageN = max(age, 0.16) + uDt*1.15;   // being thrown right now
   else                 ageN = age - uDt*1.05;              // spent: fall back and fade
   ageN = clamp(ageN, 0.0, 1.35);
 
@@ -268,7 +268,7 @@ void main(){
   vec4 st = texture(uState, uv);
   float age = st.w;
   // no sheet here: collapse the instance out of clip space
-  if (age < 0.45 || st.x < 0.10){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
+  if (age < 0.85 || st.x < 0.10){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vAge = 0.0; return; }
 
   float h = st.x;
   vec2 flow = st.yz;
@@ -282,15 +282,15 @@ void main(){
   // the curl: a sheet thrown from the crest, rotating forward as it ages.
   // age 0 -> just leaving the crest;  age 1+ -> plunged onto the water ahead
   float q = clamp(age/1.2, 0.0, 1.0);
-  float H = clamp(h*0.16 + 0.08, 0.08, 0.5);   // lip scaled to the wave, not the depth
-  float R = H*(0.42 + 0.20*q);
+  float H = clamp(h*0.30 + 0.14, 0.14, 0.85);  // a lip is a good fraction of wave height
+  float R = H*(0.60 + 0.28*q);   // curl radius must dominate the ribbon width
   float a0 = 2.0, a1 = a0 - (0.25 + 3.3*smoothstep(0.05, 0.75, q));
   float a = mix(a0, a1, aRib.x);
   vec3 centre = crest + vec3(0.0, H*0.72, 0.0) + fwd*R*0.30;
   vec3 pos = centre + fwd*(R*cos(a)) + vec3(0.0, R*sin(a), 0.0);
   // width along the crest, and a torn, vertically-strung trailing edge
   float wob = sin(float(cell.x)*1.7) * 0.25;
-  float width = (DOMW/float(${CW}))*1.9;
+  float width = (DOMW/float(${CW}))*1.05;
   pos += side*((aRib.y - 0.5)*width*(1.0 + wob*0.3));
   // the sheet thins and tears toward its tip
   pos.y -= aRib.x*aRib.x*0.10*H;
@@ -436,9 +436,9 @@ function resize(){
 addEventListener('resize', resize); resize();
 
 const VP = new Float32Array(16);
-const eye = [0, 2.5, -0.8];   // standing on the dry sand, inside the domain
+const eye = [0, 3.1, -0.6];   // standing on the dry sand, inside the domain
 function buildVP(){
-  const target = [0, 0.45, -21.0];
+  const target = [0, 0.15, -19.0];
   let fx = target[0]-eye[0], fy = target[1]-eye[1], fz = target[2]-eye[2];
   const fl = Math.hypot(fx,fy,fz); fx/=fl; fy/=fl; fz/=fl;
   let rx = -fz, ry = 0, rz = fx;      // right = normalize(cross(forward, worldUp))
