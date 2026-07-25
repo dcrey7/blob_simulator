@@ -99,7 +99,7 @@
   <div id="hint">touch the water &nbsp;·&nbsp; H hides</div>
   <div id="panel">
     <div class="ctl"><label for="waves">Waves</label><input id="waves" type="range" min="0" max="1" step="0.001" value="0.55"></div>
-    <div class="ctl"><label for="sun">Sun</label><input id="sun" type="range" min="0" max="1" step="0.001" value="0.45"></div>
+    <div class="ctl"><label for="sun">Time</label><input id="sun" type="range" min="0" max="1" step="0.001" value="0.45"></div>
   </div>
 </div>
 <div id="debug"></div>
@@ -108,16 +108,14 @@
 <script>
 'use strict';
 /* ============================================================
-   BEACH — a fullscreen shore simulation from first principles.
-   Physics encoded from coastal science:
-   - spilling breakers on a gentle sandy slope
-   - shoaling: waves shorten, slow, and grow approaching shore
-   - breaking at H ≈ 0.78·depth → whitewater bore rolls in
-   - asymmetric swash: fast uprush, slow backwash, wet sand film
-   - wave sets: slow amplitude beats between components
-   Rendering after GPU Gems ch.1 (sum of directional sines,
-   analytic normals, sharpened-cos crest masks) with a
-   mip-chain bloom post pass. Zero dependencies.
+   BEACH v2 — real 3D surf.
+   The sea is a raymarched heightfield (Seascape-style bisection
+   tracing + choppy sea_octave noise, CC-BY-NC technique by TDM)
+   riding on big shoreward swells with coastal-science behavior:
+   shoaling, spilling breakers, whitewater bore, asymmetric
+   swash, wet sand. The Time knob runs midnight → sunrise →
+   noon: stars and a mottled moon rule the night sea.
+   Zero dependencies.
    ============================================================ */
 
 const MAXRIP = 8;
@@ -137,15 +135,21 @@ out vec4 fragColor;
 uniform vec2  uRes;
 uniform float uTime;
 uniform float uWaves;         // swell energy 0..1
-uniform float uSunK;          // 0 dusk .. 1 noon
-uniform vec3  uSunDir;
-uniform vec2  uCam;           // gentle sway
-uniform vec4  uRip[MAXRIP];   // x, z, birth, amp
+uniform float uSunK;          // time of day: 0 midnight .. 1 noon
+uniform float uNightF;        // 1 deep night .. 0 day
+uniform float uLightI;        // light intensity (moon is dimmer)
+uniform vec3  uSunDir;        // active shading light: sun by day, moon by night
+uniform vec3  uSunDisc;       // the sun's true direction (may be below horizon)
+uniform vec3  uMoonDisc;      // the moon's true direction
+uniform float uMoonA;         // moon visibility, fades with dawn
+uniform float uDawn;          // horizon glow strength at sunrise/sunset
+uniform vec2  uCam;
+uniform vec4  uRip[MAXRIP];
 
-const float CAMH   = 3.2;     // eye height — standing on the dune
-const float SHOREMIN = 6.5;   // closest the swash reaches (m from camera)
-const float SHOREMAX = 11.0;  // waterline at full backwash
-const float BREAKD = 16.0;    // breaker line distance — H ≈ 0.78·depth here
+const float CAMH   = 3.4;     // standing on the dune
+const float SHORE  = 9.0;     // where the beach bed crosses still-water level
+const float BEDSLOPE = 0.052; // gentle sandy slope → spilling breakers
+const mat2  OCT = mat2(1.6, 1.2, -1.2, 1.6);   // Seascape octave rotation
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float noise2(vec2 p){
@@ -158,86 +162,178 @@ float fbm(vec2 p){
   return 0.55*noise2(p) + 0.28*noise2(p*2.13+7.7) + 0.17*noise2(p*4.41+3.1);
 }
 
-/* three-stop palette: dusk → golden hour → noon */
-vec3 pal3(vec3 du, vec3 go, vec3 no){
-  return uSunK < 0.5 ? mix(du, go, uSunK*2.0) : mix(go, no, uSunK*2.0-1.0);
+/* four-stop palette: night → dusk → golden → noon */
+vec3 pal4(vec3 ni, vec3 du, vec3 go, vec3 no){
+  float t = uSunK;
+  if (t < 0.25) return mix(ni, du, smoothstep(0.0, 0.25, t));
+  if (t < 0.55) return mix(du, go, smoothstep(0.25, 0.55, t));
+  return mix(go, no, smoothstep(0.55, 1.0, t));
 }
-vec3 P_zenith(){  return pal3(vec3(0.055,0.05,0.14), vec3(0.16,0.20,0.44),  vec3(0.15,0.38,0.80)); }
-vec3 P_horizon(){ return pal3(vec3(0.75,0.26,0.19),  vec3(0.95,0.55,0.26),  vec3(0.62,0.78,0.90)); }
-vec3 P_sun(){     return pal3(vec3(1.9,0.72,0.32),   vec3(1.9,1.35,0.75),   vec3(1.9,1.8,1.6)); }
-vec3 P_seaDeep(){ return pal3(vec3(0.045,0.06,0.11), vec3(0.06,0.13,0.19),  vec3(0.05,0.22,0.32)); }
-vec3 P_seaShal(){ return pal3(vec3(0.11,0.14,0.16),  vec3(0.14,0.30,0.33),  vec3(0.12,0.48,0.50)); }
-vec3 P_sss(){     return pal3(vec3(0.35,0.28,0.15),  vec3(0.25,0.52,0.42),  vec3(0.18,0.65,0.55)); }
-vec3 P_sand(){    return pal3(vec3(0.34,0.24,0.22),  vec3(0.78,0.60,0.42),  vec3(0.88,0.78,0.58)); }
-vec3 P_foam(){    return pal3(vec3(0.85,0.62,0.52),  vec3(1.0,0.88,0.74),   vec3(0.97,0.98,0.99)); }
+vec3 P_zenith(){  return pal4(vec3(0.005,0.009,0.028), vec3(0.045,0.04,0.12), vec3(0.12,0.15,0.38), vec3(0.09,0.29,0.72)); }
+vec3 P_horizon(){ return pal4(vec3(0.020,0.035,0.075), vec3(0.78,0.25,0.17),  vec3(0.97,0.55,0.24), vec3(0.55,0.72,0.88)); }
+vec3 P_sun(){     return pal4(vec3(1.05,1.12,1.25),    vec3(1.9,0.72,0.32),   vec3(1.9,1.35,0.75),  vec3(1.9,1.8,1.6)); }
+vec3 P_seaDeep(){ return pal4(vec3(0.008,0.013,0.026), vec3(0.045,0.06,0.11), vec3(0.06,0.13,0.19), vec3(0.05,0.22,0.32)); }
+vec3 P_seaShal(){ return pal4(vec3(0.025,0.040,0.065), vec3(0.11,0.14,0.16),  vec3(0.14,0.30,0.33), vec3(0.12,0.48,0.50)); }
+vec3 P_sss(){     return pal4(vec3(0.05,0.09,0.13),    vec3(0.35,0.28,0.15),  vec3(0.25,0.52,0.42), vec3(0.18,0.65,0.55)); }
+vec3 P_sandA(){   return pal4(vec3(0.085,0.10,0.145),  vec3(0.34,0.24,0.22),  vec3(0.78,0.60,0.42), vec3(0.88,0.78,0.58)); }
+vec3 P_sandB(){   return pal4(vec3(0.065,0.08,0.12),   vec3(0.28,0.18,0.16),  vec3(0.66,0.47,0.30), vec3(0.80,0.66,0.44)); }
+vec3 P_foam(){    return pal4(vec3(0.60,0.66,0.78),    vec3(0.93,0.84,0.78),  vec3(0.97,0.95,0.92), vec3(0.98,0.99,1.0)); }
 
-/* ---- sky: gradient + sun + clouds + horizon haze ---- */
-vec3 skyColor(vec3 rd, bool withClouds, bool withSun){
+/* ---- sky: gradient, stars, sun/moon, clouds ---- */
+vec3 skyColor(vec3 rd, bool withClouds, bool withLight){
   float y = max(rd.y, 0.0);
-  vec3 col = mix(P_horizon(), P_zenith(), pow(y, 0.58));
+  vec3 col = mix(P_horizon(), P_zenith(), pow(y, 0.46));
   float sd = dot(rd, uSunDir);
-  if (withSun){
-    // sun disc grows near the horizon (atmospheric magnification feel)
-    float R = mix(0.055, 0.028, uSunK);
-    float disc = smoothstep(cos(R), cos(R*0.82), sd);
-    col += P_sun() * disc * 1.6;
-    col += P_sun() * pow(max(sd, 0.0), 80.0) * 0.55;  // inner glow
-    col += P_horizon() * pow(max(sd, 0.0), 7.0) * 0.22*(1.0-uSunK*0.5);
+
+  // stars fade in with night, away from the horizon haze
+  if (uNightF > 0.03 && rd.y > 0.02){
+    vec2 sp = rd.xz/(rd.y + 0.35);
+    for (int l = 0; l < 2; l++){
+      float sc = l == 0 ? 5.0 : 9.5;
+      vec2 cell = floor(sp*sc), f = fract(sp*sc);
+      float h = hash(cell + float(l)*17.3);
+      vec2 off = 0.2 + 0.6*vec2(hash(cell+3.1), hash(cell+7.9));
+      float star = smoothstep(0.055, 0.0, length(f - off)) * step(0.88, h);
+      star *= 0.55 + 0.45*sin(uTime*(0.8 + h*2.2) + h*40.0);
+      col += vec3(0.80,0.87,1.0) * star * uNightF * smoothstep(0.02, 0.16, rd.y) * (l==0?0.9:0.5);
+    }
   }
-  col += P_horizon() * exp(-abs(rd.y)*14.0) * 0.10;   // horizon haze band
+
+  if (withLight){
+    // the sun — physically rises out of and sets into the sea
+    float sdS = dot(rd, uSunDisc);
+    float RS = mix(0.055, 0.028, uSunK);
+    float discS = smoothstep(cos(RS), cos(RS*0.82), sdS);
+    col += P_sun() * discS * 1.7 * (1.0 - uNightF*0.9);
+    col += P_sun() * pow(max(sdS, 0.0), 80.0) * 0.55 * (1.0 - uNightF*0.85);
+    col += P_horizon() * pow(max(sdS, 0.0), 7.0) * 0.22*(1.0-uSunK*0.5)*(1.0-uNightF);
+    // dawn/dusk: the horizon ignites around the sun's azimuth before it shows
+    float azProx = pow(max(dot(normalize(vec3(rd.x, 0.0, rd.z)),
+                               normalize(vec3(uSunDisc.x, 0.0, uSunDisc.z))), 0.0), 3.0);
+    col += P_sun() * azProx * exp(-max(rd.y, 0.0)*9.0) * uDawn * 0.55;
+    // the moon — silver, mottled, on its own arc, fading with the night
+    float sdM = dot(rd, uMoonDisc);
+    float discM = smoothstep(cos(0.043), cos(0.036), sdM);
+    float mott = 1.0 - fbm((rd.xy - uMoonDisc.xy)*34.0)*0.45;
+    col += vec3(1.02,1.06,1.14) * discM * mott * 1.15 * uMoonA;
+    col += vec3(0.75,0.82,1.0) * pow(max(sdM, 0.0), 90.0) * 0.35 * uMoonA;
+  }
+  col += P_horizon() * exp(-abs(rd.y)*14.0) * 0.10;
+
   if (withClouds && rd.y > 0.015){
-    vec2 cp = rd.xz/(rd.y + 0.12) * 6.5;
-    float cl = fbm(cp*0.14 + vec2(uTime*0.008, 0.0));
-    float cover = smoothstep(0.48, 0.78, cl) * smoothstep(0.0, 0.12, rd.y);
+    float horizFade = smoothstep(0.0, 0.10, rd.y);
     float sunProx = pow(max(sd, 0.0), 3.0);
-    vec3 cloudCol = mix(P_zenith()*0.75 + vec3(0.18), P_sun()*0.55 + P_horizon()*0.45, sunProx);
-    col = mix(col, cloudCol, cover*0.55);
+    float dayGlow = 1.0 - uNightF*0.72;
+
+    // CIRRUS — high icy wisps, stretched and fast (jet-stream wind)
+    vec2 cpH = rd.xz/(rd.y + 0.08);
+    float ci = fbm(vec2(cpH.x*0.30, cpH.y*1.25)*1.1 + vec2(uTime*0.045, uTime*0.008));
+    float cirrus = smoothstep(0.56, 0.86, ci) * 0.38 * horizFade;
+    col = mix(col, mix(vec3(0.9), P_sun()*0.7 + vec3(0.35), sunProx*0.6)*dayGlow, cirrus);
+
+    // CUMULUS — puffy cellular cotton, drifting slowly, sunlit on one side
+    vec2 q = rd.xz/(rd.y + 0.16) * 0.30 + vec2(uTime*0.016, uTime*0.005);
+    float cu  = fbm(q)*0.68 + fbm(q*2.9 + 11.3)*0.32;
+    float cumulus = smoothstep(0.56, 0.74, cu) * horizFade;
+    float cuLit = fbm(q + normalize(uSunDir.xz + vec2(0.001))*0.085)*0.68
+                + fbm((q + normalize(uSunDir.xz + vec2(0.001))*0.085)*2.9 + 11.3)*0.32;
+    float lit = clamp((cu - cuLit)*6.0 + 0.35 + sunProx*0.5, 0.0, 1.3);
+    vec3 cuShadow = mix(P_zenith()*0.6 + vec3(0.16, 0.17, 0.20), vec3(0.06,0.07,0.11), uNightF);
+    vec3 cuBright = mix(vec3(1.02), P_sun()*0.75 + P_horizon()*0.35, 0.35 + sunProx*0.5)*dayGlow;
+    col = mix(col, mix(cuShadow, cuBright, lit), cumulus*mix(0.85, 0.55, uNightF));
+
+    // STRATUS — soft gray sheet hugging the horizon
+    float str = smoothstep(0.14, 0.02, rd.y) * smoothstep(0.35, 0.6, fbm(cpH*0.10 + vec2(uTime*0.01, 3.7))) * 0.30;
+    col = mix(col, mix(P_horizon(), vec3(0.55), 0.4)*dayGlow, str*horizFade*(1.0-uNightF*0.5));
   }
   return col;
 }
 
-/* ---- swell field: sum of directional sines with shoaling ----
-   GPU Gems ch.1 form; k grows near shore so waves shorten AND slow,
-   amplitude grows (shoaling), sets ride a slow beat envelope.      */
-const vec2 W1 = vec2(0.10, 1.0);    // mostly shoreward, slight angles
-const vec2 W2 = vec2(-0.22, 1.0);
-const vec2 W3 = vec2(0.30, 1.0);
-
-float swellPhase(vec2 xz, float kmul, vec2 dir, float k0, float w, float ph){   // dispersion: long waves faster
-  vec2 d = normalize(dir);
-  return (d.x*xz.x + d.y*(-xz.y)) * k0 * kmul + w*uTime + ph;
-}
-float waveH(vec2 xz, float dist, out float crest){
-  float sh   = smoothstep(45.0, 9.0, dist);           // shoaling ramp
-  float kmul = mix(1.0, 2.1, sh);
-  float amp  = (0.14 + uWaves*0.55) * mix(0.55, 1.5, sh);
-  float env  = 0.68 + 0.32*sin(uTime*0.085 + dist*0.012);   // wave sets
-  amp *= env;
-  float p1_ = swellPhase(xz, kmul, W1, 0.34, 1.00, 0.0);
-  float p2_ = swellPhase(xz, kmul, W2, 0.25, 0.82, 2.1);
-  float p3_ = swellPhase(xz, kmul, W3, 0.55, 1.35, 4.0);
-  float farFade = smoothstep(42.0, 12.0, dist);       // kill sub-pixel moiré offshore
-  // bend the crests: real wave trains are never straight lines
-  float bend = (noise2(xz*0.055) - 0.5)*2.6 + (noise2(xz*0.13 + 31.7) - 0.5)*1.1;
-  float p1 = p1_ + bend, p2 = p2_ + bend*1.3, p3 = p3_ + bend*0.7;
-  float h = amp*( 0.62*sin(p1) + 0.22*sin(p2)*farFade + 0.10*sin(p3)*farFade );
-  // chop
-  h += amp*0.10*sin(xz.x*1.9 + uTime*1.7)*sin(-xz.y*2.6 - uTime*2.2)*farFade;
-  // sharpened-cos crest mask (GPU Gems eq.8) for foam
-  crest = pow(max(0.0, sin(p1))*0.72 + max(0.0, sin(p2))*0.28, 3.0);
-  return h;
-}
-vec3 seaNormal(vec2 xz, float dist, float scale){
-  float c;
-  float e = 0.18;
-  float hC = waveH(xz, dist, c);
-  float hX = waveH(xz + vec2(e,0.0), dist, c);
-  float hZ = waveH(xz + vec2(0.0,-e), dist+e, c);
-  vec3 n = normalize(vec3(-(hX-hC)/e*scale, 1.0, (hZ-hC)/e*scale));
-  return n;
+/* ---- Seascape's choppy wave octave (technique by TDM, Shadertoy Ms2SD1) ---- */
+float seaOctave(vec2 uv, float choppy){
+  uv += noise2(uv);
+  vec2 wv = 1.0 - abs(sin(uv));
+  vec2 swv = abs(cos(uv));
+  wv = mix(wv, swv, wv);
+  return pow(1.0 - pow(wv.x*wv.y, 0.65), choppy);
 }
 
-/* click ripples: expanding rings that bend the surface normal */
+/* asymmetric swash: fast uprush, slow backwash, riding the set envelope */
+float swashLift(float lat){
+  float cyc = fract(uTime*0.075 + sin(lat*0.14)*0.06);
+  float runP = smoothstep(0.0, 0.16, cyc) * (1.0 - smoothstep(0.24, 1.0, cyc));
+  float setEnv = 0.62 + 0.38*sin(uTime*0.085);
+  return (0.10 + uWaves*0.13) * runP * setEnv;
+}
+
+/* the sea: big shoreward swells + choppy octave detail, with shoaling */
+float waveH(vec2 xz, out float crest){
+  float dist = -xz.y;
+  float sh   = smoothstep(45.0, 14.0, dist);
+  float kmul = mix(1.0, 1.9, sh);
+  // surf peaks mid-field, between the horizon and the sand, then collapses to swash
+  float amp  = (0.20 + uWaves*0.72) * mix(0.45, 1.65, sh) * smoothstep(5.5, 12.0, dist);
+  // sets and lulls: deep beat + spatial breakup so rows never read as corduroy
+  float setBeat = 0.5 + 0.5*sin(uTime*0.085 + dist*0.012);
+  float setNoise = noise2(vec2(dist*0.04 + uTime*0.02, xz.x*0.015));
+  amp *= 0.30 + 0.70*mix(setBeat, setNoise, 0.45);
+
+  float bend = (noise2(xz*0.05) - 0.5)*2.4 + (noise2(xz*0.12 + 31.7) - 0.5)*1.0;
+  float p1 = (0.10*xz.x + dist) * 0.24*kmul + uTime*0.85 + bend;
+  float p2 = (-0.20*xz.x + dist) * 0.175*kmul + uTime*0.70 + 2.1 + bend*1.3;
+
+  // peaked swell profile — sharp crests, wide troughs (trochoidal feel)
+  float s1 = pow(0.5 + 0.5*sin(p1), 1.9)*2.0 - 1.0;
+  float s2 = pow(0.5 + 0.5*sin(p2), 1.7)*2.0 - 1.0;
+  float h = amp*(0.82*s1 + 0.18*s2);
+
+  // fluid detail: two Seascape octaves, calmer far away and in the shallows
+  float farFade = smoothstep(50.0, 12.0, dist);
+  float dAmp = (0.05 + uWaves*0.10) * farFade * mix(0.4, 1.0, sh);
+  vec2 duv = xz * 0.55; duv.x *= 0.75;
+  float t1 = uTime*0.8;
+  h += seaOctave((duv + t1)*1.0, 2.6) * dAmp;
+  duv *= OCT;
+  h += seaOctave((duv - t1)*1.9, 2.2) * dAmp*0.35;
+
+  crest = pow(max(0.0, sin(p1))*0.75 + max(0.0, sin(p2))*0.25, 3.0);
+  // the swash thins out and never reaches the viewer's feet
+  return h + swashLift(xz.x) * smoothstep(18.0, 7.0, dist) * smoothstep(4.2, 7.5, dist);
+}
+float waveHfast(vec2 xz){ float c; return waveH(xz, c); }
+
+/* beach bed: rises out of the sea, with dunes and mounds — never a flat ramp */
+float bedY(vec2 xz){
+  float dist = -xz.y;
+  float b = (SHORE - dist)*BEDSLOPE;
+  b += (fbm(vec2(xz.x*0.055, 3.1)) - 0.5)*0.14;               // lateral dunes → curved waterline
+  b += (fbm(vec2(xz.x*0.02, dist*0.05) + 9.7) - 0.5)*0.06;    // long soft mounds
+  return b;
+}
+
+/* combined surface for tracing: whichever is higher, sand or water */
+float fmap(vec3 p){
+  return p.y - max(bedY(p.xz), waveHfast(p.xz));
+}
+
+/* Seascape-style bisection heightfield tracing */
+float trace(vec3 ro, vec3 rd, out vec3 p){
+  float tm = 0.0, tx = 240.0;
+  float hx = fmap(ro + rd*tx);
+  p = ro + rd*tx;
+  if (hx > 0.0) return -1.0;              // ray escapes to the sky
+  float hm = fmap(ro);
+  float tmid = 0.0;
+  for (int i = 0; i < 9; i++){
+    tmid = mix(tm, tx, hm/(hm - hx));
+    p = ro + rd*tmid;
+    float hmid = fmap(p);
+    if (hmid < 0.0){ tx = tmid; hx = hmid; }
+    else           { tm = tmid; hm = hmid; }
+  }
+  return tmid;
+}
+
 vec3 rippleN(vec2 xz){
   vec3 acc = vec3(0.0);
   for (int i=0;i<MAXRIP;i++){
@@ -254,7 +350,6 @@ vec3 rippleN(vec2 xz){
 void main(){
   vec2 uv = (2.0*gl_FragCoord.xy - uRes)/uRes.y;
 
-  // gently swaying camera on the sand, looking out to sea
   vec3 ro = vec3(uCam.x, CAMH + uCam.y, 0.0);
   vec3 fw = normalize(vec3(0.0, -0.16, -1.0));
   vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
@@ -262,89 +357,151 @@ void main(){
   vec3 rd = normalize(fw*1.4 + rt*uv.x + up*uv.y);
 
   vec3 col;
+  vec3 p;
+  float t = rd.y < 0.06 ? trace(ro, rd, p) : -1.0;
 
-  if (rd.y > -0.004){
+  if (t < 0.0){
     col = skyColor(rd, true, true);
   } else {
-    float t = -ro.y/rd.y;
-    vec3  p = ro + rd*t;
-    float dist = -p.z;                       // meters out to sea
+    float dist = -p.z;
     float lat  = p.x;
+    float bed  = bedY(p.xz);
+    float crest;
+    float wat  = waveH(p.xz, crest);
+    float depth = wat - bed;                     // water column here
 
-    // ---- asymmetric swash: fast uprush, slow backwash ----
-    float cyc = fract(uTime*0.075 + sin(lat*0.14)*0.06);
-    float runP = smoothstep(0.0, 0.16, cyc) * (1.0 - smoothstep(0.24, 1.0, cyc));
-    float setEnv = 0.62 + 0.38*sin(uTime*0.085);                 // big sets run higher
-    float edge = SHOREMAX - (SHOREMAX-SHOREMIN)*runP*setEnv
-               + 0.35*sin(lat*0.55 + uTime*0.2) + 0.2*noise2(vec2(lat*0.4, uTime*0.15));
+    // ---- sand: lit as terrain, with wind ripples and grain ----
+    vec3 sand = mix(P_sandA(), P_sandB(), fbm(p.xz*0.7));       // golden patchwork
+    float g1 = noise2(p.xz*55.0), g2 = noise2(p.xz*170.0 + 9.1);
+    float grainFade = smoothstep(16.0, 3.0, dist);
+    sand *= 1.0 + (g1-0.5)*0.22*grainFade + (g2-0.5)*0.16*grainFade;
+    float e2 = 0.22;
+    float bX = bedY(p.xz + vec2(e2, 0.0));
+    float bZ = bedY(p.xz + vec2(0.0, -e2));
+    vec3 nS = normalize(vec3(-(bX-bed)/e2, 1.0, (bZ-bed)/e2));
+    float rip = sin(dist*6.5 + lat*1.3 + fbm(p.xz*0.9)*6.0);    // wind ripples
+    nS = normalize(vec3(nS.x + rip*0.09*grainFade, nS.y, nS.z + rip*0.05*grainFade));
+    float diffS = clamp(dot(nS, uSunDir)*0.75 + 0.42, 0.22, 1.15);
+    sand *= diffS;
+    // mica sparkle catching the light
+    float glint = pow(hash(floor(p.xz*130.0)), 60.0) * grainFade;
+    sand += P_sun() * glint * 2.2 * max(uSunDir.y, 0.1);
 
-    // ---- sand base ----
-    vec3 sand = P_sand();
-    float grainFade = smoothstep(14.0, 3.0, dist);
-    sand *= 0.94 + 0.12*hash(floor(p.xz*70.0))*grainFade;        // grains
-    sand *= 1.0 + 0.03*sin(dist*2.6 + lat*0.5);                  // micro ripples
-    // wet band: from swash max reach down to the waterline, drying over the cycle
-    float wet = smoothstep(SHOREMIN - 0.6, edge, dist);
-    wet *= smoothstep(SHOREMIN - 0.8, SHOREMIN + 0.4, dist);
-    vec3 wetSand = sand * mix(1.0, 0.55, wet*0.9);
-    wetSand += skyColor(reflect(rd, vec3(0.0,1.0,0.0)), false, false) * wet * 0.12;  // damp sheen
-    col = wetSand;
+    // wetness: everything the swash reaches stays dark and mirror-damp
+    float reach = 0.10 + (0.10 + uWaves*0.13)*(0.62+0.38);      // max run-up height
+    float wet = smoothstep(reach + 0.10, 0.01, bed) * smoothstep(-0.10, -0.02, bed);
+    wet *= 0.72 + 0.38*fbm(p.xz*vec2(0.45, 0.8) + 2.2);         // patchy drying
+    wet = clamp(wet + smoothstep(0.05, -0.02, depth)*0.6, 0.0, 1.0);
+    vec3 wetSand = sand * mix(1.0, 0.42, wet);
+    vec3 skyRef = skyColor(reflect(rd, vec3(0.0,1.0,0.0)), false, false);
+    float grz = pow(1.0 - max(dot(-rd, vec3(0.0,1.0,0.0)), 0.0), 3.0);
+    wetSand += skyRef * wet * (0.08 + 0.34*grz);                // mirror only at grazing angles
+    // the light's column mirrored in the wet film near the waterline
+    wetSand += P_sun() * pow(max(dot(reflect(rd, vec3(0.0,1.0,0.0)), uSunDir), 0.0), 180.0)
+             * wet * 1.4 * uLightI * smoothstep(5.5, 8.5, dist);
 
-    float seaMask = smoothstep(edge - 0.1, edge + 0.9, dist);
-    if (seaMask > 0.001){
+    // pebbles: clustered along the high-tide line, not sprinkled everywhere
+    float pebFade = smoothstep(15.0, 3.5, dist);
+    float tideBand = exp(-pow((bed - reach*0.85)*7.0, 2.0));
+    float pebPatch = smoothstep(0.35, 0.65, fbm(vec2(lat*0.10, bed*6.0) + 5.3));
+    float pebDens = clamp(tideBand*pebPatch + 0.03, 0.0, 1.0);
+    if (pebFade > 0.01 && pebDens > 0.04){
+      vec2 pc = p.xz*3.2;
+      vec2 cell = floor(pc), f = fract(pc);
+      float hc = hash(cell);
+      if (hc > mix(0.985, 0.78, pebDens)){
+        vec2 off = 0.25 + 0.5*vec2(hash(cell+1.7), hash(cell+4.3));
+        vec2 dv = (f - off)*vec2(1.0, 1.4);
+        float pr = 0.05 + 0.09*hash(cell+9.2);
+        float pd = length(dv);
+        float m = smoothstep(pr, pr*0.7, pd) * pebFade;
+        float shadow = smoothstep(pr*1.6, pr*0.85, pd) * 0.30 * pebFade;
+        float tone = hash(cell+13.1);
+        vec3 pcol = mix(vec3(0.35,0.32,0.30), vec3(0.63,0.59,0.53), tone);
+        pcol = mix(pcol, vec3(0.58,0.43,0.33), step(0.78, hash(cell+21.7)));   // warm ones
+        pcol *= clamp(0.55 + 0.9*(-dv.y/pr), 0.25, 1.25);                      // domed shading
+        pcol *= mix(1.0, 0.55, wet);
+        pcol *= mix(0.42, 1.0, max(uSunDir.y, 0.15)) * (1.0 - uNightF*0.55);
+        wetSand = mix(wetSand*(1.0 - shadow), pcol, m);
+      }
+    }
+
+    // backwash: sheets of sand dragged seaward as each swash retreats
+    float cyc2 = fract(uTime*0.075 + sin(lat*0.14)*0.06);
+    float backwash = smoothstep(0.22, 0.45, cyc2) * (1.0 - smoothstep(0.85, 1.0, cyc2));
+    float drag = noise2(vec2(lat*4.5, dist*0.65 + uTime*1.1));
+    float sstreak = smoothstep(0.55, 0.82, drag) * wet * backwash;
+    wetSand = mix(wetSand, sand*0.72, sstreak*0.45);
+
+    if (depth <= 0.005){
+      col = wetSand;
+    } else {
       // ---- water ----
-      float crest;
-      float h = waveH(p.xz, dist, crest);
-      float depth = max(0.0, (dist - SHOREMIN) * 0.055);          // gentle sandy slope
-      float nScale = mix(0.25, 1.0, smoothstep(0.0, 12.0, dist)) // calm film near shore
-                   * mix(0.22, 1.0, smoothstep(60.0, 18.0, dist)); // flatten far field
-      vec3 n = seaNormal(p.xz, dist, nScale);
-      n += rippleN(p.xz);
-      n = normalize(n);
+      float e = 0.12;
+      float cD;
+      float hX = waveH(p.xz + vec2(e, 0.0), cD);
+      float hZ = waveH(p.xz + vec2(0.0, -e), cD);
+      vec3 n = normalize(vec3(-(hX - wat)/e, 1.0, (hZ - wat)/e));
+      n = normalize(n + rippleN(p.xz));
 
       float fres = pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
-      vec3 shallow = mix(P_seaShal(), wetSand, smoothstep(3.5, 0.4, depth*18.0));
-      vec3 body = mix(shallow, P_seaDeep(), smoothstep(0.2, 1.6, depth));
+      vec3 shallow = mix(wetSand, P_seaShal(), smoothstep(0.02, 0.35, depth));
+      // suspended sand clouds the retreating film
+      float cycW = fract(uTime*0.075 + sin(lat*0.14)*0.06);
+      float bwF = smoothstep(0.22, 0.45, cycW);
+      shallow = mix(shallow, P_sandA()*0.82, bwF * smoothstep(0.30, 0.05, depth) * 0.5);
+      vec3 body = mix(shallow, P_seaDeep(), smoothstep(0.3, 1.5, depth));
+      body += P_seaShal() * max(wat, 0.0) * 0.35;               // lifted water is lighter
       vec3 refl = skyColor(reflect(rd, n), false, false);
       vec3 water = mix(body, refl, clamp(0.10 + 0.70*fres, 0.0, 0.80));
 
-      // sun glitter path — sparkling specular toward the sun
+      // glitter path
       float sp = pow(max(dot(reflect(rd, n), uSunDir), 0.0), 320.0);
       sp *= 0.6 + 1.7*hash(floor(p.xz*vec2(9.0, 13.0)) + floor(uTime*7.0));
-      water += P_sun() * sp * 3.2;
+      water += P_sun() * sp * 3.2 * uLightI;
 
-      // translucent backlit crests (subsurface glow near the sun's column)
-      float sunCol = pow(max(dot(normalize(vec3(rd.x, 0.0, rd.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0), 6.0);
-      water += P_sss() * crest * sunCol * smoothstep(20.0, 8.0, dist) * 0.5;
+      // backlit translucent crests near the light's column
+      float lightCol = pow(max(dot(normalize(vec3(rd.x,0.0,rd.z)), normalize(vec3(uSunDir.x,0.0,uSunDir.z))), 0.0), 5.0);
+      water += P_sss() * crest * max(wat,0.0) * (0.5 + lightCol) * smoothstep(30.0, 8.0, dist) * 1.2;
 
-      // ---- whitewater: breaker bore + swash rim (spilling breakers) ----
-      float foamTex = fbm(p.xz*vec2(1.4, 2.4) + vec2(0.0, uTime*0.9));
-      float bore = smoothstep(BREAKD+4.5, BREAKD, dist) * smoothstep(edge+0.2, edge+2.4, dist);
-      float breaker = bore * crest * (0.9 + uWaves*1.3);
-      float rim = smoothstep(edge + 0.85, edge + 0.12, dist);      // swash leading edge
-      float foam = clamp(breaker*1.8 + rim*1.2, 0.0, 1.0);
-      foam *= smoothstep(0.20, 0.52, foamTex + foam*0.4);
-      water = mix(water, P_foam(), foam);
-      // lacy leftover bubbles on the film
-      float lace = smoothstep(0.62, 0.86, fbm(p.xz*vec2(2.2, 3.6) - vec2(0.0, uTime*0.25)))
-                 * smoothstep(edge+2.2, edge+0.4, dist) * 0.5;
-      water = mix(water, P_foam(), lace*seaMask);
+      // ---- whitewater ----
+      float breakH = 0.78 * max(depth, 0.05);                   // breaking criterion H≈0.78d
+      float over = smoothstep(breakH*0.55, breakH*1.05, max(wat, 0.0));
+      float foamTex = fbm(p.xz*vec2(0.9, 3.2) + vec2(0.0, uTime*1.1));   // streaks along the crest
+      float bubbles = smoothstep(0.40, 0.75, noise2(p.xz*7.0 + vec2(0.0, uTime*1.8)));
+      float bore  = over * crest * smoothstep(2.2, 0.7, depth); // spilling whitewater
+      // waves break in sections along the crest, never as one solid rope
+      float sect = smoothstep(0.30, 0.72, fbm(vec2(lat*0.16, dist*0.05) + vec2(uTime*0.05, 0.0)));
+      bore *= 0.30 + 0.80*sect;
+      float rim   = smoothstep(0.16, 0.02, depth);              // swash leading edge
+      float caps  = over * smoothstep(24.0, 40.0, dist) * 0.5;  // offshore whitecaps
+      float foam  = clamp(bore*2.1 + rim*1.4 + caps, 0.0, 1.0);
+      foam *= smoothstep(5.0, 7.5, dist);                     // no foam up the dry beach
+      foam *= mix(0.6, 1.0, foamTex);
+      foam = max(foam - bubbles*0.35*foam, 0.0);                // bubbly holes
+      water = mix(water, P_foam()*mix(1.0, 1.3, bore), min(foam*1.2, 1.0));
+      // spray flung off the breaking crests
+      float sprayN = noise2(p.xz*16.0 + vec2(uTime*2.5, -uTime*4.5));
+      water += P_foam() * smoothstep(0.70, 0.90, sprayN) * bore * crest * 1.6;
+      // lace left on the film as it retreats
+      float lace = smoothstep(0.60, 0.85, fbm(p.xz*vec2(2.4, 3.8) - vec2(0.0, uTime*0.3)))
+                 * smoothstep(0.5, 0.08, depth) * 0.55 * smoothstep(5.5, 8.0, dist);
+      water = mix(water, P_foam(), lace);
 
-      col = mix(col, water, seaMask);
-
-      // horizon aerial perspective
-      col = mix(col, skyColor(vec3(rd.x, 0.002, rd.z), false, false), smoothstep(45.0, 210.0, t));
+      col = mix(wetSand, water, smoothstep(0.005, 0.05, depth));
     }
+
+    // aerial perspective
+    col = mix(col, skyColor(vec3(rd.x, 0.002, rd.z), false, false), smoothstep(45.0, 220.0, t));
   }
 
-  // filmic grade
   col *= 0.92;
   col = col*(2.51*col + 0.03)/(col*(2.43*col + 0.59) + 0.14);
   col = pow(clamp(col, 0.0, 1.0), vec3(1.0/2.2));
   fragColor = vec4(col, 1.0);
 }`;
 
-/* post pass: mip-chain bloom (sun, glitter, foam), vignette, grain */
+/* post pass: mip-chain bloom (sun, moon, glitter, foam), vignette, grain */
 const POST = `#version 300 es
 precision highp float;
 out vec4 fragColor;
@@ -401,7 +558,8 @@ function buildPrograms(){
   progScene = makeProg(VERT, FRAG);
   gl.useProgram(progScene);
   U = {};
-  for (const n of ['uRes','uTime','uWaves','uSunK','uSunDir','uCam'])
+  for (const n of ['uRes','uTime','uWaves','uSunK','uNightF','uLightI','uSunDir',
+                   'uSunDisc','uMoonDisc','uMoonA','uDawn','uCam'])
     U[n] = gl.getUniformLocation(progScene, n);
   U.uRip = gl.getUniformLocation(progScene, 'uRip[0]');
 
@@ -437,7 +595,7 @@ canvas.addEventListener('webglcontextrestored', () => { buildPrograms(); allocSc
 const Q = new URLSearchParams(location.search);
 const S = {
   waves: Q.has('waves') ? +Q.get('waves') : 0.55,
-  sun:   Q.has('sun')   ? +Q.get('sun')   : 0.45,
+  sun:   Q.has('sun')   ? +Q.get('sun')   : 0.30,
   paused: false, uiHidden: false, debug: Q.has('debug'),
 };
 if (matchMedia('(prefers-reduced-motion: reduce)').matches) S.waves = 0.25;
@@ -464,7 +622,7 @@ let ripIdx = 0, lastHover = 0;
 
 function pointerToWorld(cx, cy){
   const ux = (2*cx - W)/H, uyv = 1 - 2*cy/H;
-  const ro = [camX, 3.2 + camY, 0];
+  const ro = [camX, 3.4 + camY, 0];
   let fx = 0, fy = -0.16, fz = -1;
   const fl = Math.hypot(fx, fy, fz); fx /= fl; fy /= fl; fz /= fl;
   let rx = -fz, rz = fx;
@@ -475,7 +633,7 @@ function pointerToWorld(cx, cy){
   const dz = fz*1.4 + rz*ux + upz*uyv;
   if (dy >= -0.01) return null;
   const t = -ro[1]/dy;
-  return [ro[0] + dx*t, ro[2] + dz*t];   // world x, z
+  return [ro[0] + dx*t, ro[2] + dz*t];
 }
 function addRipple(wx, wz, amp){
   rips[ripIdx*4] = wx; rips[ripIdx*4+1] = wz;
@@ -505,10 +663,10 @@ window.addEventListener('error', e => {
   dbg.textContent = 'ERR: ' + e.message + ' @' + e.lineno;
 });
 
-const wavesEl = document.getElementById('waves'), sunEl = document.getElementById('sun');
-wavesEl.value = S.waves; sunEl.value = S.sun;
+const wavesEl = document.getElementById('waves'), sunEl2 = document.getElementById('sun');
+wavesEl.value = S.waves; sunEl2.value = S.sun;
 wavesEl.addEventListener('input', e => { S.waves = +e.target.value; });
-sunEl.addEventListener('input', e => { S.sun = +e.target.value; });
+sunEl2.addEventListener('input', e => { S.sun = +e.target.value; });
 
 let uiTimer = 0;
 function uiWake(){
@@ -545,7 +703,7 @@ function frame(now){
 
   emaMs = emaMs*0.95 + (dt*1000)*0.05;
   if (++frames % 48 === 0){
-    if (emaMs > 15.5 && resScale > 0.55){ resScale = Math.max(0.55, resScale*0.85); resize(); }
+    if (emaMs > 15.5 && resScale > 0.5){ resScale = Math.max(0.5, resScale*0.85); resize(); }
     else if (emaMs < 9.5 && resScale < 1){ resScale = Math.min(1, resScale*1.1); resize(); }
     window.__beach.fps = Math.round(1000/emaMs);
     window.__beach.scale = +resScale.toFixed(2);
@@ -556,9 +714,32 @@ function frame(now){
   camX = Math.sin(simTime*0.11)*0.35;
   camY = Math.cos(simTime*0.09)*0.06;
 
-  const el = 0.03 + Math.pow(S.sun, 1.3)*0.58;
-  let sx = 0.12*(1.0 - S.sun), sy = Math.sin(el), sz = -Math.cos(el);
-  const sl = Math.hypot(sx, sy, sz); sx /= sl; sy /= sl; sz /= sl;
+  // full day arc: 0 = night → sunrise → noon at 0.5 → sunset → night at 1
+  const tK = S.sun;
+  const arc = Math.sin(Math.PI * tK);
+  const sunElv = -0.22 + 0.86*arc;
+  const nightF = Math.max(0, Math.min(1, (0.02 - sunElv)/0.10));
+  const dawn = Math.exp(-Math.pow((sunElv - 0.01)*9, 2));
+  const palK = Math.max(0, Math.min(1, (sunElv + 0.10)/0.70));   // palettes follow elevation
+
+  // the sun rises and sets in the same spot, straight out over the sea
+  const sAz = 0.10;
+  let sx = sAz, sy = Math.sin(sunElv), sz = -Math.cos(sunElv);
+  let sl = Math.hypot(sx, sy, sz); sx/=sl; sy/=sl; sz/=sl;
+
+  // the moon: high through the night, dipping away midday, fading with dawn
+  const moonEl = 0.42 - 0.62*arc;
+  let mx = 0.35, my = Math.sin(moonEl), mz = -Math.cos(moonEl);
+  let ml = Math.hypot(mx, my, mz); mx/=ml; my/=ml; mz/=ml;
+  const moonA = nightF * Math.max(0, Math.min(1, (moonEl + 0.03)/0.12));
+
+  // shading light blends smoothly from sun to moon across twilight
+  const moonMix = nightF < 0.35 ? 0 : Math.min((nightF - 0.35)/0.4, 1);
+  const lightEl = (1-moonMix)*Math.max(sunElv, 0.015) + moonMix*Math.max(moonEl, 0.10);
+  const lightAz = (1-moonMix)*sAz + moonMix*0.35;
+  let lx = lightAz, ly = Math.sin(lightEl), lz = -Math.cos(lightEl);
+  const ll = Math.hypot(lx, ly, lz); lx /= ll; ly /= ll; lz /= ll;
+  const lightI = 1.0 - nightF*0.62;
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO);
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -566,8 +747,14 @@ function frame(now){
   gl.uniform2f(U.uRes, canvas.width, canvas.height);
   gl.uniform1f(U.uTime, simTime);
   gl.uniform1f(U.uWaves, S.waves);
-  gl.uniform1f(U.uSunK, S.sun);
-  gl.uniform3f(U.uSunDir, sx, sy, sz);
+  gl.uniform1f(U.uSunK, palK);
+  gl.uniform1f(U.uNightF, nightF);
+  gl.uniform1f(U.uLightI, lightI);
+  gl.uniform3f(U.uSunDir, lx, ly, lz);
+  gl.uniform3f(U.uSunDisc, sx, sy, sz);
+  gl.uniform3f(U.uMoonDisc, mx, my, mz);
+  gl.uniform1f(U.uMoonA, moonA);
+  gl.uniform1f(U.uDawn, dawn);
   gl.uniform2f(U.uCam, camX, camY);
   gl.uniform4fv(U.uRip, rips);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
