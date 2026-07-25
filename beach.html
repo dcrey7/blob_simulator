@@ -141,7 +141,7 @@ const mat2  OCT = mat2(1.6, 1.2, -1.2, 1.6);   // Seascape octave rotation
 const float WAVE_T = 4.3;      // seconds between arrivals
 const float DSTART = 58.0;     // where a wave enters the scene
 const float VSWELL = 3.2;      // swell speed shoreward (m/s)
-const float VBORE  = 4.1;      // a broken bore runs in faster
+const float VBORE  = 3.7;      // a broken bore runs in faster
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float noise2(vec2 p){
@@ -212,20 +212,22 @@ float waveH(vec2 xz, out float crest, out float carry){
     float r2 = hash(vec2(idx, 11.37));
     float r3 = hash(vec2(idx, 27.13));
 
-    // where along its length this wave chooses to break — varying down the
-    // crest, so the break UNZIPS sideways instead of firing all at once
     float amp0 = (0.34 + uWaves*1.15) * (0.55 + 0.85*r1);
-    float bd = 8.5 + 7.0*uWaves + (r2 - 0.5)*4.5
-             + 2.6*sin(lat*0.13 + r1*23.0)
-             + 1.3*sin(lat*0.052 - uTime*0.35 + r3*11.0);
-    bd = max(bd, SHORE + 0.8);
-
-    // crest travels at swell speed, then the broken bore runs in faster
+    // ONE break distance for the whole wave: the crest stays a coherent line
+    float bd = max(8.5 + 7.0*uWaves + (r2 - 0.5)*4.5, SHORE + 0.8);
     float tb = (DSTART - bd)/VSWELL;                  // the moment it breaks
-    float dc = DSTART - VSWELL*age;
-    float broke = step(tb, age);
-    dc = mix(dc, bd - VBORE*(age - tb), broke);
+
+    // crest travels at swell speed, then the broken bore runs in faster.
+    // the swell→bore handover is SMOOTH, so the line never tears apart.
+    float broke = smoothstep(tb - 0.45, tb + 0.45, age);
+    float dc = mix(DSTART - VSWELL*age, bd - VBORE*(age - tb), broke);
+    dc += 1.0*sin(lat*0.075 + r1*19.0) + 0.5*sin(lat*0.031 + r3*7.0);  // gently curved crest
     if (dc > DSTART + 3.0 || dc < -6.0) continue;
+
+    // the WHITENING unzips along the length (each stretch breaks at its own
+    // moment) while the geometry above stays one continuous ridge
+    float latT = (2.3*sin(lat*0.13 + r1*23.0) + 1.2*sin(lat*0.05 - uTime*0.35 + r3*11.0))/VSWELL;
+    float brokeW = smoothstep(tb + latT - 0.5, tb + latT + 0.5, age);
 
     // shoaling growth as it runs out of depth
     float shoal = clamp((DSTART - dc)/max(DSTART - bd, 1.0), 0.0, 1.0);
@@ -255,11 +257,11 @@ float waveH(vec2 xz, out float crest, out float carry){
     float yBore = (nose*1.3 + wall*tail*0.8)*fade;
 
     // the instant of breaking: the lip throws over in a burst of white
-    float flash = exp(-pow((age - tb)/0.55, 2.0))*smoothstep(0.4, 0.9, shoal);
+    float flash = exp(-pow((age - tb - latT)/0.55, 2.0))*smoothstep(0.4, 0.9, shoal);
 
     h     += mix(hSwell, hBore, broke);
-    crest += mix(cSwell, cBore, broke) + flash*1.6*broke;
-    carry += yBore*broke;
+    crest += mix(cSwell, cBore, brokeW) + flash*1.6*brokeW;
+    carry += yBore*brokeW;
   }
 
   // fluid surface detail, churned where the whitewater is
@@ -365,6 +367,62 @@ uniform float uDawn;          // horizon glow strength at sunrise/sunset
 uniform vec2  uCam;
 uniform vec4  uRip[MAXRIP];
 uniform sampler2D uFoam;      // the simulated foam field
+
+/* ---- THE PITCHING LIP ----------------------------------------------------
+   A breaking wave overhangs: water above air above water. That is not a
+   heightfield, so the lip is carried as its own 3D signed-distance object -
+   a curved sheet that grows out of the crest, throws forward, and plunges
+   down to touch the water ahead, enclosing a tube. Union-of-spheres along
+   the lip's arc keeps the field conservative for sphere tracing. */
+void pickLip(float lat, out vec4 lp, out float w){
+  lp = vec4(0.0); w = 0.0;
+  float k0 = floor(uTime/WAVE_T);
+  for (int i = 0; i < NWAVE; i++){
+    float idx = k0 - float(i);
+    float age = uTime - idx*WAVE_T;
+    if (age < 0.0) continue;
+    float r1 = hash(vec2(idx, 3.71));
+    float r2 = hash(vec2(idx, 11.37));
+    float r3 = hash(vec2(idx, 27.13));
+    float bd = max(8.5 + 7.0*uWaves + (r2 - 0.5)*4.5, SHORE + 0.8);
+    float tb = (DSTART - bd)/VSWELL;
+    float latT = (2.3*sin(lat*0.13 + r1*23.0) + 1.2*sin(lat*0.05 - uTime*0.35 + r3*11.0))/VSWELL;
+    float e = age - tb - latT;                    // seconds since this stretch broke
+    float ww = exp(-pow(e/1.25, 2.0));
+    if (ww > w){
+      w = ww;
+      float broke = smoothstep(tb - 0.45, tb + 0.45, age);
+      float dc = mix(DSTART - VSWELL*age, bd - VBORE*(age - tb), broke);
+      dc += 1.0*sin(lat*0.075 + r1*19.0) + 0.5*sin(lat*0.031 + r3*7.0);
+      float shoal = clamp((DSTART - dc)/max(DSTART - bd, 1.0), 0.0, 1.0);
+      float amp0 = (0.34 + uWaves*1.15)*(0.55 + 0.85*r1);
+      float H = amp0*(0.30 + 0.95*pow(shoal, 1.7));
+      float dep = max((dc - SHORE)*BEDSLOPE, 0.0);
+      H = min(H, 0.78*dep + 0.06);
+      lp = vec4(dc, H, clamp(e/1.6 + 0.22, 0.0, 1.0), r1);
+    }
+  }
+}
+
+/* the lip as a swept curved sheet: q=0 just rearing, q=1 plunged shut */
+float sdLip(vec3 p, vec4 lp){
+  float u = (-p.z) - lp.x;                        // + = offshore of the crest
+  vec2 P = vec2(u, p.y);
+  float H = lp.y, q = lp.z;
+  float R = H*(0.40 + 0.20*q);
+  vec2 c = vec2(0.26*R, H*0.80);                  // centre of the curl
+  float a0 = 2.05;                                // starts up and slightly back
+  float a1 = a0 - (0.30 + q*3.15);                // throws forward, then down
+  float d = 1e5;
+  for (int i = 0; i < 7; i++){
+    float t = float(i)/6.0;
+    float a = mix(a0, a1, t);
+    vec2 s = c + R*vec2(cos(a), sin(a));
+    float thk = (H*0.15 + 0.015)*(1.0 - 0.42*t);  // the sheet thins toward the tip
+    d = min(d, length(P - s) - thk);
+  }
+  return d;
+}
 
 /* sample the foam simulation at a world position */
 float foamAt(vec2 xz){
@@ -685,6 +743,59 @@ void main(){
 
     // aerial perspective
     col = mix(col, skyColor(vec3(rd.x, 0.002, rd.z), false, false), smoothstep(45.0, 220.0, t));
+  }
+
+  // ---- the pitching lip, traced as a real 3D overhang in front of the sea ----
+  {
+    float dn = 8.5 + 7.0*uWaves;
+    float tn = (-ro.z - dn)/rd.z;
+    if (tn > 0.0){
+      vec4 lp; float lw;
+      pickLip(ro.x + rd.x*tn, lp, lw);
+      if (lw > 0.05 && lp.y > 0.10 && rd.y < 0.25){
+        // march only through the slab that can hold this wave's curl
+        float ta = (-ro.z - (lp.x + 2.5))/rd.z;
+        float tb2 = (-ro.z - (lp.x - 3.5))/rd.z;
+        float tlo = max(min(ta, tb2), 0.1);
+        float thi = min(max(ta, tb2), (t > 0.0 ? t : 300.0));
+        float tl = tlo, hit = -1.0;
+        vec3 lq = ro;
+        for (int i = 0; i < 44; i++){
+          if (tl > thi) break;
+          lq = ro + rd*tl;
+          float d = sdLip(lq, lp);
+          if (d < 0.006*tl){ hit = tl; break; }
+          tl += max(d*0.85, 0.01);
+        }
+        if (hit > 0.0){
+          const vec2 he = vec2(0.012, 0.0);
+          vec3 n = normalize(vec3(
+            sdLip(lq + he.xyy, lp) - sdLip(lq - he.xyy, lp),
+            sdLip(lq + he.yxy, lp) - sdLip(lq - he.yxy, lp),
+            sdLip(lq + he.yyx, lp) - sdLip(lq - he.yyx, lp)));
+          vec3 vd = -rd;
+          float fres = pow(1.0 - max(dot(n, vd), 0.0), 4.0);
+          // thin sheet of thrown water: dark green body, sunlit translucent
+          // shoulder, and a foam-shattered outer skin
+          vec3 body = mix(P_seaDeep()*1.5, P_seaShal()*1.35, 0.55);
+          float thru = pow(max(dot(-n, uSunDir)*0.5 + 0.5, 0.0), 2.2);
+          vec3 col2 = body + P_sss()*thru*0.9;
+          col2 += skyColor(reflect(rd, n), false, false)*(0.12 + 0.55*fres);
+          // the outer face and the tip are torn white
+          float rough = fbm(vec3(lq.xz*3.4, lq.y*3.0).xy + vec2(0.0, uTime*1.2));
+          float skin = smoothstep(0.35, 0.85, rough)*0.55
+                     + smoothstep(0.25, 0.9, lp.z)*0.45;
+          col2 = mix(col2, P_foam(), clamp(skin*0.85 + fres*0.35, 0.0, 1.0));
+          col2 += P_sun()*pow(max(dot(reflect(rd, n), uSunDir), 0.0), 40.0)*0.7*uLightI;
+          col2 = pow(clamp(col2*0.95, 0.0, 4.0), vec3(1.0));
+          // fade the curl in and out with its own life, and with distance haze
+          float a = smoothstep(0.05, 0.35, lw);
+          col2 = mix(col2, skyColor(vec3(rd.x, 0.002, rd.z), false, false),
+                     smoothstep(45.0, 220.0, hit));
+          col = mix(col, col2, a);
+        }
+      }
+    }
   }
 
   col *= 0.92;
