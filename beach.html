@@ -210,6 +210,8 @@ float waveH(vec2 xz, out float crest, out float carry){
   float wH = hash(vec2(wid, 7.3));
   float crashStr = smoothstep(0.10, 0.50, wH) * (0.45 + 0.55*uWaves);
   float bcenter = 11.0 + 6.0*uWaves + (wH - 0.5)*3.2;          // personal break point
+  // real waves break at one point first, and the break SWEEPS along the crest
+  bcenter += 2.3*sin(xz.x*0.15 + wH*19.0) + 1.3*sin(xz.x*0.06 - uTime*0.45);
 
   // the crash is an EVENT on this wave's own clock, driven by its crest position:
   // approach → shoaling surge → crest overtakes the base → sudden collapse → burst
@@ -324,15 +326,15 @@ void main(){
   float f = mix(prev, blur, 0.30);                    // turbulent spreading
 
   // decay: bubbles dissipate in seconds, lingering longest in the churned shallows
-  float life = mix(0.55, 1.7, smoothstep(1.4, 0.05, depth));
+  float life = mix(1.1, 3.4, smoothstep(1.4, 0.05, depth));
   f *= exp(-uDt/life);
 
   // inject where the water collides with itself
   float inj = 0.0;
   inj += max(crest - 1.30, 0.0) * 1.5;                // folding crest / bursting lip
-  inj += max(carry - 0.25, 0.0) * 0.8;                // the rolling bore front
+  inj += max(carry - 0.12, 0.0) * 1.5;                // the rolling bore front
   inj += smoothstep(0.10, 0.02, depth) * step(0.004, depth) * 0.35;  // swash collision edge
-  f = min(f + inj*uDt*2.0, 0.95);
+  f = min(f + inj*uDt*2.6, 0.97);
 
   if (depth < 0.004) f *= 0.30;                       // stranded lace on wet sand fades fast
   fragColor = vec4(clamp(f, 0.0, 1.0), 0.0, 0.0, 1.0);
@@ -375,12 +377,12 @@ vec3 pal4(vec3 ni, vec3 du, vec3 go, vec3 no){
 vec3 P_zenith(){  return pal4(vec3(0.005,0.009,0.028), vec3(0.045,0.04,0.12), vec3(0.12,0.15,0.38), vec3(0.09,0.29,0.72)); }
 vec3 P_horizon(){ return pal4(vec3(0.020,0.035,0.075), vec3(0.78,0.25,0.17),  vec3(0.97,0.55,0.24), vec3(0.55,0.72,0.88)); }
 vec3 P_sun(){     return pal4(vec3(1.05,1.12,1.25),    vec3(1.9,0.72,0.32),   vec3(1.9,1.35,0.75),  vec3(1.9,1.8,1.6)); }
-vec3 P_seaDeep(){ return pal4(vec3(0.008,0.013,0.026), vec3(0.045,0.06,0.11), vec3(0.06,0.13,0.19), vec3(0.05,0.22,0.32)); }
-vec3 P_seaShal(){ return pal4(vec3(0.025,0.040,0.065), vec3(0.11,0.14,0.16),  vec3(0.14,0.30,0.33), vec3(0.12,0.48,0.50)); }
+vec3 P_seaDeep(){ return pal4(vec3(0.008,0.013,0.026), vec3(0.040,0.055,0.09), vec3(0.05,0.11,0.15), vec3(0.045,0.15,0.20)); }
+vec3 P_seaShal(){ return pal4(vec3(0.024,0.036,0.055), vec3(0.10,0.13,0.14),  vec3(0.13,0.24,0.25), vec3(0.13,0.31,0.33)); }
 vec3 P_sss(){     return pal4(vec3(0.05,0.09,0.13),    vec3(0.35,0.28,0.15),  vec3(0.25,0.52,0.42), vec3(0.18,0.65,0.55)); }
 vec3 P_sandA(){   return pal4(vec3(0.085,0.10,0.145),  vec3(0.34,0.24,0.22),  vec3(0.78,0.60,0.42), vec3(0.88,0.78,0.58)); }
 vec3 P_sandB(){   return pal4(vec3(0.065,0.08,0.12),   vec3(0.28,0.18,0.16),  vec3(0.66,0.47,0.30), vec3(0.80,0.66,0.44)); }
-vec3 P_foam(){    return pal4(vec3(0.60,0.66,0.78),    vec3(0.93,0.84,0.78),  vec3(0.97,0.95,0.92), vec3(0.98,0.99,1.0)); }
+vec3 P_foam(){    return pal4(vec3(0.52,0.58,0.70),    vec3(0.88,0.80,0.75),  vec3(0.93,0.92,0.90), vec3(0.94,0.95,0.96)); }
 
 /* ---- sky: gradient, stars, sun/moon, clouds ---- */
 vec3 skyColor(vec3 rd, bool withClouds, bool withLight){
@@ -596,7 +598,7 @@ void main(){
       float bwF = smoothstep(0.22, 0.45, cycW);
       shallow = mix(shallow, P_sandA()*0.82, bwF * smoothstep(0.30, 0.05, depth) * 0.5);
       vec3 body = mix(shallow, P_seaDeep(), smoothstep(0.3, 1.5, depth));
-      body += P_seaShal() * max(wat, 0.0) * 0.35;               // lifted water is lighter
+      body += P_seaShal() * max(wat, 0.0) * 0.10;               // faces stay dark, as in life
       vec3 refl = skyColor(reflect(rd, n), false, false);
       vec3 water = mix(body, refl, clamp(0.10 + 0.70*fres, 0.0, 0.80));
 
@@ -633,9 +635,11 @@ void main(){
       float brink = exp(-pow((step1 - 1.15)/0.52, 2.0)) * smoothstep(0.35, 0.8, step1);
 
       float fSim = smoothstep(0.10, 0.65, foamAt(p.xz));
+      // a spilling breaker pours white DOWN its own front face as it collapses
+      float curtain = frontEdge * crashNow * 1.6 + fSim*frontEdge*0.5;
       // soft foam: shatters into rafts and clumps
       float soft = clamp(fSim*1.0 + bore*0.65 + rim*0.7 + caps + crashNow*0.7
-                       + frontEdge*0.60, 0.0, 1.0);
+                       + frontEdge*0.60 + curtain, 0.0, 1.0);
       // hard foam: the crisp white tear-line along the layer's leading edge
       float hard = clamp(brink*1.8 + lipEdge*0.85, 0.0, 1.0);
 
@@ -652,8 +656,14 @@ void main(){
       // fine bubble grain lives in the COLOR — white on white, never gray holes
       float fine  = noise2(p.xz*22.0 + vec2(uTime*1.3, -uTime*2.2));
       float fine2 = noise2(p.xz*46.0 - vec2(uTime*0.8, uTime*1.6));
-      vec3 foamCol = P_foam() * (0.90 + 0.07*fine + 0.06*fine2);
-      water = mix(water, foamCol*mix(1.0, 1.22, bore), min(foam, 1.0));
+      // grainy, multi-scale bubble structure — real foam is never smooth
+      float grain = 0.55*fine + 0.45*fine2;
+      vec3 foamCol = P_foam() * (0.82 + 0.26*grain);
+      // suspended sand stains the foam tan in the shallows
+      foamCol = mix(foamCol, foamCol*vec3(1.02,0.93,0.80), smoothstep(0.55, 0.06, depth)*0.55);
+      // foam is translucent: dark water shows through the thinner sheets
+      float cover = min(foam, 1.0)*(0.72 + 0.28*grain);
+      water = mix(water, foamCol*mix(1.0, 1.18, bore), cover);
       water += P_foam() * hard * 0.45;                         // the brink burns brightest
       // spray flung off the breaking crests, harder in big surf
       float sprayN = noise2(p.xz*16.0 + vec2(uTime*2.5, -uTime*4.5));
