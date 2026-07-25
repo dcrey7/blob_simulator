@@ -74,28 +74,28 @@ float smin(float a, float b, float k){
 float waveSDF(vec3 p, out float lipness){
   float q = uT;
   // seabed rising toward the viewer (+z is toward us)
-  float bed = -0.85 + p.z*0.16;
+  float bed = -0.85 + p.z*0.16;   // (depth reference only)
 
   // ---- the wave body: a ridge that rears and leans forward ----
   float xc = -1.2 + q*2.0;                       // crest travels toward us
   float u = p.z - xc;                            // >0 = in front of the crest (shoreward)
-  float H = 0.55 + 0.75*smoothstep(0.0, 0.55, q) - 0.35*smoothstep(0.72, 1.0, q);
+  float H = 0.55 + 0.80*smoothstep(0.0, 0.34, q) - 0.55*smoothstep(0.45, 0.72, q);
   float lean = (0.35 + 1.5*q)*0.55;              // the face pitches forward
   float uu = u + lean*0.42*exp(-pow(u*1.5,2.0));
   float back = 1.0 - smoothstep(0.0, 2.6, -uu);  // long lazy back offshore
   float face = 1.0 - smoothstep(0.0, 0.85 - 0.55*q, uu);  // face steepens with q
   float ridge = clamp(min(back, face), 0.0, 1.0);
-  float top = bed + 0.30 + H*pow(ridge, 0.85);
+  float top = 0.0 + H*pow(ridge, 0.85);      // sea level is LEVEL; the bed only sets depth
   // chop
   top += 0.035*sin(p.x*4.2 + uTime*1.7)*sin(p.z*3.1 - uTime*1.2)*ridge;
   float body = p.y - top;
 
   // ---- the overturning lip: a sheet thrown out of the crest ----
   // it exists from the moment the face goes vertical, and plunges as q grows
-  float grow = smoothstep(0.18, 0.42, q);
-  float shut = smoothstep(0.42, 0.80, q);
+  float grow = smoothstep(0.14, 0.32, q);
+  float shut = smoothstep(0.33, 0.45, q);   // the plunge is a SNAP, not a sweep
   float R = (0.30 + 0.22*grow)*(0.85 + 0.3*H);
-  vec2  c = vec2(xc + 0.30*R, bed + 0.30 + H*0.82);   // centre of the curl
+  vec2  c = vec2(xc + 0.30*R, H*0.82);   // centre of the curl
   float a0 = 2.15, a1 = a0 - (0.30 + 3.2*shut);       // sweeps forward and down
   float lip = 1e5;
   for (int i=0;i<8;i++){
@@ -104,10 +104,14 @@ float waveSDF(vec3 p, out float lipness){
     // the lip is thrown along the crest with a little lateral waver
     float wav = 0.055*sin(p.x*1.9 + 1.7) + 0.03*sin(p.x*3.7);
     vec2 s = c + (R+wav)*vec2(cos(a), sin(a));
-    float thk = (0.085 + 0.05*H)*(1.0 - 0.45*t);      // thins toward the tip
+    // FALLING WATER HANGS IN VERTICAL STRANDS: the sheet is grooved across its
+    // width, so it separates into tall thin fingers as it is thrown over
+    float fing = 0.5 + 0.5*sin(p.x*16.0 + fbm(vec2(p.x*2.2, 3.1))*5.0);
+    float thk = (0.085 + 0.05*H)*(1.0 - 0.45*t)*(0.42 + 0.85*pow(fing, 0.7));
     lip = min(lip, length(vec2(p.z, p.y) - s) - thk);
   }
-  lip -= 0.02*fbm(vec2(p.x*3.0, p.y*3.0 + uTime))*grow;   // torn, ragged sheet
+  // ragged vertically-stretched tearing (tall thin features, drawn downward)
+  lip -= 0.022*fbm(vec2(p.x*7.5, p.y*1.1 - uTime*2.6))*grow;
   lip += (1.0 - grow)*4.0;                                // absent before it forms
 
   // ---- ONE FIELD: the lip is not an object on the wave, it IS the wave ----
@@ -115,9 +119,27 @@ float waveSDF(vec3 p, out float lipness){
   lipness = clamp((body - lip)*2.4 + 0.5, 0.0, 1.0);      // how lip-like this point is
 
   // collapse: after it shuts, the whole thing slumps into a broad mound
-  float slump = smoothstep(0.80, 1.0, q);
-  float mound = p.y - (bed + 0.30 + 0.30*exp(-pow((p.z - xc - 0.5)*0.9, 2.0)));
+  float slump = smoothstep(0.46, 0.70, q);
+  float mound = p.y - (0.30*exp(-pow((p.z - xc - 0.5)*0.9, 2.0)));
   d = mix(d, smin(mound, d, 0.3), slump);
+
+  // ---- THE SPLASH: the lip hits the water and throws a crown straight up ----
+  float imp = smoothstep(0.42, 0.47, q)*(1.0 - smoothstep(0.50, 0.86, q));
+  if (imp > 0.001){
+    float age = clamp((q - 0.445)/0.30, 0.0, 1.0);
+    float zi = xc + 0.62;                              // where the lip landed
+    float rr = 0.08 + 0.85*age;                        // the crown races outward
+    float hh = (1.20 - 0.80*age)*age*1.35; // up fast, then falls back
+    // a ragged wall of thrown water, torn into vertical strands
+    float ragged = 0.5 + 0.5*sin(p.x*13.0 + fbm(vec2(p.x*3.0, age*4.0))*7.0);
+    float thick = (0.055 + 0.10*(1.0 - age))*(0.35 + 0.9*ragged);
+    float ring = length(vec2(abs(p.z - zi) - rr, p.y - hh)) - thick;
+    // and a plume of spray directly over the impact
+    float plume = length(vec2((p.z - zi)*1.5, (p.y - hh)*0.55)) - (0.17 + 0.26*age)*(1.0-age*0.6);
+    float splash = smin(ring, plume + 0.12, 0.22) + (1.0 - imp)*6.0;
+    d = smin(d, splash, 0.18);
+    lipness = max(lipness, imp*smoothstep(0.35, 0.0, splash));
+  }
   return d;
 }
 float waveD(vec3 p){ float l; return waveSDF(p, l); }
@@ -140,11 +162,11 @@ vec3 sky(vec3 rd){
 void main(){
   vec2 uv = (2.0*gl_FragCoord.xy - uRes)/uRes.y;
   // side-on camera, like the drawing
-  vec3 ro = vec3(0.0, 0.45, 4.6);
-  vec3 fw = normalize(vec3(0.0,-0.07,-1.0));
+  vec3 ro = vec3(0.0, 2.9, 5.0);
+  vec3 fw = normalize(vec3(0.0,-0.52,-1.0));
   vec3 rt = normalize(cross(fw, vec3(0,1,0)));
   vec3 up = cross(rt, fw);
-  vec3 rd = normalize(fw*1.5 + rt*uv.x + up*uv.y);
+  vec3 rd = normalize(fw*1.15 + rt*uv.x + up*uv.y);
   vec3 sun = normalize(vec3(0.35,0.42,-0.84));
 
   vec3 col = sky(rd);
@@ -164,7 +186,7 @@ void main(){
     float fres = pow(1.0 - max(dot(n,vd),0.0), 4.0);
 
     // water body: deep green-teal, lighter where thin/lifted
-    float dep = clamp(0.9 - (p.y + 0.55)*0.9, 0.0, 1.0);
+    float dep = clamp(0.85 - (p.y + 0.15)*0.9, 0.0, 1.0);
     vec3 deepC = vec3(0.015,0.10,0.13), shalC = vec3(0.10,0.34,0.36);
     vec3 body = mix(shalC, deepC, dep);
 
@@ -174,15 +196,17 @@ void main(){
     body += vec3(0.18,0.62,0.55)*thru*thin*1.5;
 
     // reflection + sun glint
-    vec3 c = body + sky(reflect(rd,n))*(0.10 + 0.62*fres);
-    c += vec3(1.6,1.45,1.2)*pow(max(dot(reflect(rd,n),sun),0.0), 55.0)*0.8;
+    vec3 c = body + sky(reflect(rd,n))*(0.06 + 0.30*fres);
+    c += vec3(1.6,1.45,1.2)*pow(max(dot(reflect(rd,n),sun),0.0), 70.0)*0.45;
 
     // whitewater: the tip is torn to foam, and everything the collapse touches
-    float tear = fbm(vec2(p.x*5.5, p.z*5.0 + uTime*1.6));
-    float foam = smoothstep(0.45,0.95,thin)*smoothstep(0.35,0.75,tear)*0.9
-               + smoothstep(0.62,1.0,uT)*smoothstep(0.4,0.8,tear)*0.8
-               + smoothstep(0.55,0.9,fres)*0.25;
-    c = mix(c, vec3(0.95,0.97,0.98)*(0.85+0.2*tear), clamp(foam,0.0,1.0));
+    float tear = fbm(vec2(p.x*8.0, p.y*1.2 - uTime*3.2));   // tall falling streaks
+    float impF = smoothstep(0.42,0.47,uT)*(1.0 - smoothstep(0.50,0.86,uT));
+    float foam = smoothstep(0.40,0.92,thin)*smoothstep(0.30,0.70,tear)*1.0
+               + smoothstep(0.46,0.72,uT)*smoothstep(0.35,0.75,tear)*0.85
+               + smoothstep(0.72,0.98,fres)*0.10
+               + impF*0.55*smoothstep(0.15,0.65,tear);      // the splash is white
+    c = mix(c, vec3(0.93,0.96,0.97)*(0.82+0.2*tear), clamp(foam,0.0,0.95));
 
     col = c;
   }
