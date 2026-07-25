@@ -286,27 +286,39 @@ float waveH(vec2 xz, out float crest, out float carry){
   // every wave rolls its own fate: some crash hard, some just bob ashore
   float wid = floor(p1/6.2831853);                            // this wave's identity
   float wH = hash(vec2(wid, 7.3));
-  float crashStr = smoothstep(0.22, 0.72, wH);
-  float bcenter = 9.5 + 5.0*uWaves + (wH - 0.5)*3.0;          // personal break point
-  float bz = exp(-pow((dist - bcenter)/(2.0 + 1.6*uWaves), 2.0))
-           * uWaves * (0.20 + 1.6*crashStr);
-  p1 += 0.85*bz*cos(p1);                                      // face steepens, leans shoreward
+  float crashStr = smoothstep(0.12, 0.55, wH) * (0.35 + 0.65*uWaves);
+  float bcenter = 8.5 + 4.5*uWaves + (wH - 0.5)*3.0;          // personal break point
+
+  // the crash is an EVENT on this wave's own clock, driven by its crest position:
+  // approach → face steepens → crest overtakes the base → sudden collapse → burst
+  float kk = 0.24*kmul;
+  float crestCoord = (1.5707963 + 6.2831853*wid - uTime*0.85 - bend)/kk - 0.10*xz.x;
+  float prog = (bcenter - crestCoord)/1.6;                    // <0 approaching, >0 crashing
+  float prox = exp(-pow((dist - crestCoord)*0.40, 2.0));      // only near this wave's crest
+  float preC = smoothstep(-1.8, -0.15, prog) * (1.0 - smoothstep(-0.05, 0.7, prog));
+  float collapse = smoothstep(0.0, 0.85, prog);               // ~0.7s of violent transform
+  float burst = exp(-pow((prog - 0.4)/0.65, 2.0));
+
+  p1 += 1.15 * preC * crashStr * prox * cos(p1);              // the top overtakes the bottom
 
   // Stokes-like profile: tall sharp crests, shallow flat troughs —
   // the trough never digs down to expose the seabed
   float s1 = pow(0.5 + 0.5*sin(p1), 1.9)*1.55 - 0.32;
   float s2 = pow(0.5 + 0.5*sin(p2), 1.7)*1.45 - 0.28;
-  // a crashed wave DIES past its break point — its energy became whitewater
-  float alive = mix(1.0, smoothstep(bcenter - 2.5, bcenter + 1.0, dist), crashStr*0.85);
+  // once crashed, THIS wave's swell is gone forever — it became whitewater
+  float alive = 1.0 - crashStr*collapse*0.92;
   float h = amp*(0.82*s1*alive + 0.18*s2);
 
-  // the lip: a sharp ridge that rears up and explodes at the crest
-  float lip = pow(max(0.0, sin(p1)), 7.0);
-  h += amp * lip * bz * 0.55;
+  // the pitching lip rears up before the break and vanishes in the collapse
+  float lip = pow(max(0.0, sin(p1)), 7.0) * preC * (1.0 - collapse);
+  h += amp * lip * crashStr * prox * 0.8;
+  // the explosion itself: a mound of thrown whitewater at the moment of collapse
+  h += amp * burst * prox * crashStr * 0.4;
+  float churn = (preC*0.4 + burst) * prox * crashStr;
 
-  // fluid detail: two Seascape octaves, churned violent inside the break zone
+  // fluid detail: two Seascape octaves, churned violent where a wave is crashing
   float farFade = smoothstep(50.0, 12.0, dist);
-  float dAmp = (0.05 + uWaves*0.10) * farFade * mix(0.4, 1.0, sh) * (1.0 + bz*1.2);
+  float dAmp = (0.05 + uWaves*0.10) * farFade * mix(0.4, 1.0, sh) * (1.0 + churn*1.8);
   vec2 duv = xz * 0.55; duv.x *= 0.75;
   float t1 = uTime*0.8;
   h += seaOctave((duv + t1)*1.0, 2.6) * dAmp;
@@ -314,7 +326,7 @@ float waveH(vec2 xz, out float crest, out float carry){
   h += seaOctave((duv - t1)*1.9, 2.2) * dAmp*0.35;
 
   crest = pow(max(0.0, sin(p1))*0.75 + max(0.0, sin(p2))*0.25, 3.0);
-  crest = min(crest + lip*bz*2.2, 2.0);                       // the crash whites out the crest
+  crest = min(crest + (lip*1.2 + burst*2.8)*prox*crashStr, 2.2);  // the crash whites out
 
   // after breaking, the whitewater keeps rolling in — crashed waves carry the most
   float rolling = pow(max(0.0, sin(p1 - 0.8)), 2.0) * (0.30 + 1.1*crashStr);
